@@ -680,18 +680,78 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const loginWithAdminCredentials = useCallback(async (adminId: string, password: string) => {
     localStorage.removeItem(MEMBER_SESSION_STORAGE_KEY);
-    const res = await fetch('/api/auth/admin-login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ adminId, password }),
-    });
-    const data = (await res.json()) as {
-      ok?: boolean;
-      error?: string;
-      user?: AppUser;
-    };
-    if (!res.ok || !data.ok || !data.user) {
-      throw new Error(data.error || 'Invalid Admin ID or Password.');
+    const trimmedId = adminId.trim();
+    let authenticatedUser: AppUser | null = null;
+    let shouldTryStaticFallback = false;
+
+    try {
+      const res = await fetch('/api/auth/admin-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adminId: trimmedId, password }),
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.status === 404 || res.status === 405 || !contentType.includes('application/json')) {
+        // Static hosting (e.g. GitHub Pages) has no Express server at /api/auth/admin-login
+        shouldTryStaticFallback = true;
+      } else {
+        const data = (await res.json()) as {
+          ok?: boolean;
+          error?: string;
+          user?: AppUser;
+        };
+        if (!res.ok || !data.ok || !data.user) {
+          throw new Error(data.error || 'Invalid Admin ID or Password.');
+        }
+        authenticatedUser = data.user;
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('Invalid Admin ID')) {
+        throw err;
+      }
+      shouldTryStaticFallback = true;
+    }
+
+    if (shouldTryStaticFallback) {
+      const sha256Hex = async (text: string): Promise<string> => {
+        const buf = await window.crypto.subtle.digest(
+          'SHA-256',
+          new TextEncoder().encode(text)
+        );
+        return Array.from(new Uint8Array(buf))
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('');
+      };
+      const [idHash, pwHash] = await Promise.all([
+        sha256Hex(trimmedId),
+        sha256Hex(password),
+      ]);
+      const EXPECTED_ID_SHA256 =
+        'c1c224b03cd9bc7b6a86d77f5dace40191766c485cd55dc48caf9ac873335d6f';
+      const EXPECTED_PW_SHA256 =
+        'd3560cd57c695bc5dd6af3e71d81b7fd5ec7ab479d200c864a086a46c8b29b61';
+      if (idHash !== EXPECTED_ID_SHA256 || pwHash !== EXPECTED_PW_SHA256) {
+        throw new Error('Invalid Admin ID or Password.');
+      }
+      const now = new Date().toISOString();
+      authenticatedUser = {
+        id: 'committee-super-admin',
+        uid: 'committee-super-admin',
+        name: 'Admin — শ্রী শ্রী শ্যামা পূজা মাশুন্ডা বুনিয়াদি স্কুল মাঠ কমিটি',
+        email: 'admin@mashundashyamapuja.org',
+        role: 'SUPER_ADMIN',
+        status: 'ACTIVE',
+        canAddMembers: true,
+        canReversePayments: true,
+        canManageExpenses: true,
+        canSendBulkWhatsApp: true,
+        createdAt: now,
+        updatedAt: now,
+      };
+    }
+
+    if (!authenticatedUser) {
+      throw new Error('Invalid Admin ID or Password.');
     }
 
     let dataset: PersistedLocalCommitteeState;
@@ -704,7 +764,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       dataset = buildCommitteeDataset();
     }
 
-    const adminUser = data.user;
+    const adminUser = authenticatedUser;
     const mergedUsers = dataset.users.some((u) => u.uid === adminUser.uid)
       ? dataset.users
       : [adminUser, ...dataset.users];

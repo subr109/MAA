@@ -12,6 +12,8 @@ import { useMaa } from '../context/MaaContext';
 import { t } from '../lib/i18n';
 import { DEFAULT_COMMITTEE_NAME } from '../lib/whatsappTemplates';
 import { MaaLogo } from '../components/MaaLogo';
+import pujaBannerImg from '../assets/images/puja_heritage_banner_1794999344685.jpg';
+import maaEmblemImg from '../assets/images/maa_durga_emblem_1794999344327.jpg';
 
 export const LoginPage: React.FC = () => {
   const {
@@ -78,7 +80,7 @@ export const LoginPage: React.FC = () => {
       {/* Left Heritage Visual Panel */}
       <div className="relative lg:w-1/2 bg-[#0F2143] text-white flex flex-col justify-between p-8 lg:p-12 overflow-hidden">
         <img
-          src="/src/assets/images/puja_heritage_banner_1794999344685.jpg"
+          src={pujaBannerImg}
           alt="Puja evening diyas and marigold garlands"
           referrerPolicy="no-referrer"
           className="absolute inset-0 w-full h-full object-cover opacity-35"
@@ -88,7 +90,7 @@ export const LoginPage: React.FC = () => {
         <div className="relative z-10 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <img
-              src="/src/assets/images/maa_durga_emblem_1794999344327.jpg"
+              src={maaEmblemImg}
               alt="MAA Puja Emblem"
               referrerPolicy="no-referrer"
               className="w-12 h-12 rounded-full object-cover border border-amber-400/50 shrink-0"
