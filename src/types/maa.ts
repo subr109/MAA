@@ -256,6 +256,7 @@ export interface CommitteeSettings {
   whatsappDefaultLanguage?: Language;
   defaultLanguage: Language;
   theme?: 'light' | 'dark';
+  ledgerResetAt?: string;
   updatedBy?: string;
   updatedAt: string;
 }

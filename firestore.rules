@@ -265,7 +265,7 @@ service cloud.firestore {
 
     function isValidSettings(data) {
       return data.keys().hasAll(['committeeName', 'defaultMonthlyChandaPaise', 'financialYear', 'whatsappEnabled', 'defaultLanguage', 'updatedAt'])
-        && data.keys().hasOnly(['committeeName', 'committeeAddress', 'contactNumber', 'email', 'pujaYear', 'defaultMonthlyChandaPaise', 'financialYear', 'dueDay', 'collectionStartDate', 'collectionEndDate', 'whatsappEnabled', 'whatsappPhoneNumberId', 'whatsappBusinessAccountId', 'whatsappApiVersion', 'whatsappReceiptTemplate', 'whatsappReminderTemplate', 'whatsappAnnouncementTemplate', 'whatsappDefaultLanguage', 'defaultLanguage', 'theme', 'updatedBy', 'updatedAt'])
+        && data.keys().hasOnly(['committeeName', 'committeeAddress', 'contactNumber', 'email', 'pujaYear', 'defaultMonthlyChandaPaise', 'financialYear', 'dueDay', 'collectionStartDate', 'collectionEndDate', 'whatsappEnabled', 'whatsappPhoneNumberId', 'whatsappBusinessAccountId', 'whatsappApiVersion', 'whatsappReceiptTemplate', 'whatsappReminderTemplate', 'whatsappAnnouncementTemplate', 'whatsappDefaultLanguage', 'defaultLanguage', 'theme', 'ledgerResetAt', 'updatedBy', 'updatedAt'])
         && data.committeeName is string && data.committeeName.size() >= 1 && data.committeeName.size() <= 160
         && (!('committeeAddress' in data) || (data.committeeAddress is string && data.committeeAddress.size() <= 300))
         && (!('contactNumber' in data) || (data.contactNumber is string && data.contactNumber.size() <= 24))
@@ -286,6 +286,7 @@ service cloud.firestore {
         && (!('whatsappDefaultLanguage' in data) || data.whatsappDefaultLanguage in ['bn', 'en'])
         && data.defaultLanguage in ['bn', 'en']
         && (!('theme' in data) || data.theme in ['light', 'dark'])
+        && (!('ledgerResetAt' in data) || (data.ledgerResetAt is string && data.ledgerResetAt.size() <= 40))
         && (!('updatedBy' in data) || (data.updatedBy is string && data.updatedBy.size() <= 128))
         && data.updatedAt is timestamp;
     }
@@ -329,7 +330,7 @@ service cloud.firestore {
     }
 
     match /members/{memberId} {
-      allow get: if isValidId(memberId) && (isCollectionAdmin() || (isSignedIn() && existing().userUid == request.auth.uid) || existing().status in ['ACTIVE', 'INACTIVE', 'ARCHIVED']);
+      allow get: if isValidId(memberId) && (isCollectionAdmin() || (isSignedIn() && existing().userUid == request.auth.uid) || resource == null || existing().status in ['ACTIVE', 'INACTIVE', 'ARCHIVED']);
       allow list: if isCollectionAdmin() || (isSignedIn() && existing().userUid == request.auth.uid) || existing().status in ['ACTIVE', 'INACTIVE', 'ARCHIVED'];
       allow create: if isValidId(memberId)
         && isValidMember(incoming())
@@ -353,7 +354,7 @@ service cloud.firestore {
     }
 
     match /collectionMonths/{monthId} {
-      allow get: if isValidId(monthId) && (isSignedIn() || existing().status in ['OPEN', 'CLOSED']);
+      allow get: if isValidId(monthId) && (isSignedIn() || resource == null || existing().status in ['OPEN', 'CLOSED']);
       allow list: if existing().status in ['OPEN', 'CLOSED'];
       allow create: if isValidId(monthId)
         && isValidCollectionMonth(incoming())
@@ -373,7 +374,7 @@ service cloud.firestore {
     }
 
     match /payments/{paymentId} {
-      allow get: if isValidId(paymentId) && (isCollectionAdmin() || (isSignedIn() && (existing().createdBy == request.auth.uid || existing().memberUserUid == request.auth.uid)) || existing().status in ['COMPLETED', 'REVERSED']);
+      allow get: if isValidId(paymentId) && (isCollectionAdmin() || resource == null || (isSignedIn() && (existing().createdBy == request.auth.uid || existing().memberUserUid == request.auth.uid)) || existing().status in ['COMPLETED', 'REVERSED']);
       allow list: if isCollectionAdmin() || (isSignedIn() && (existing().createdBy == request.auth.uid || existing().memberUserUid == request.auth.uid)) || existing().status in ['COMPLETED', 'REVERSED'];
       allow create: if isValidId(paymentId)
         && isValidPayment(incoming())
@@ -401,7 +402,7 @@ service cloud.firestore {
     }
 
     match /memberLedgers/{ledgerId} {
-      allow get: if isValidId(ledgerId) && (isCollectionAdmin() || (isSignedIn() && existing().memberUserUid == request.auth.uid) || existing().status in ['UNPAID', 'PARTIAL', 'PAID']);
+      allow get: if isValidId(ledgerId) && (isCollectionAdmin() || resource == null || (isSignedIn() && existing().memberUserUid == request.auth.uid) || existing().status in ['UNPAID', 'PARTIAL', 'PAID']);
       allow list: if isCollectionAdmin() || (isSignedIn() && existing().memberUserUid == request.auth.uid) || existing().status in ['UNPAID', 'PARTIAL', 'PAID'];
       allow create: if isValidId(ledgerId)
         && isValidMemberLedger(incoming())
@@ -429,7 +430,7 @@ service cloud.firestore {
     }
 
     match /receipts/{receiptId} {
-      allow get: if isValidId(receiptId) && (isCollectionAdmin() || (isSignedIn() && existing().memberUserUid == request.auth.uid) || existing().status in ['ACTIVE', 'VOID']);
+      allow get: if isValidId(receiptId) && (isCollectionAdmin() || resource == null || (isSignedIn() && existing().memberUserUid == request.auth.uid) || existing().status in ['ACTIVE', 'VOID']);
       allow list: if isCollectionAdmin() || (isSignedIn() && existing().memberUserUid == request.auth.uid) || existing().status in ['ACTIVE', 'VOID'];
       allow create: if isValidId(receiptId)
         && isValidReceipt(incoming())
@@ -448,7 +449,7 @@ service cloud.firestore {
     }
 
     match /expenses/{expenseId} {
-      allow get: if isValidId(expenseId) && (isCollectionAdmin() || existing().status in ['ACTIVE', 'ARCHIVED']);
+      allow get: if isValidId(expenseId) && (isCollectionAdmin() || resource == null || existing().status in ['ACTIVE', 'ARCHIVED']);
       allow list: if isCollectionAdmin() || existing().status in ['ACTIVE', 'ARCHIVED'];
       allow create: if isValidId(expenseId)
         && isValidExpense(incoming())
@@ -468,8 +469,8 @@ service cloud.firestore {
     }
 
     match /whatsappNotifications/{notificationId} {
-      allow get: if isValidId(notificationId) && (isCollectionAdmin() || isCommitteeSessionActor(existing().sentByUid));
-      allow list: if isCollectionAdmin() || isCommitteeSessionActor(existing().sentByUid);
+      allow get: if isValidId(notificationId) && (isCollectionAdmin() || resource == null || existing().status in ['QUEUED', 'SENT', 'DELIVERED', 'READ', 'FAILED']);
+      allow list: if isCollectionAdmin() || existing().status in ['QUEUED', 'SENT', 'DELIVERED', 'READ', 'FAILED'];
       allow create: if isValidId(notificationId)
         && isValidWhatsappNotification(incoming())
         && (
@@ -488,7 +489,7 @@ service cloud.firestore {
     }
 
     match /announcements/{announcementId} {
-      allow get: if isValidId(announcementId) && (isSignedIn() || existing().status in ['PUBLISHED', 'ARCHIVED']);
+      allow get: if isValidId(announcementId) && (isSignedIn() || resource == null || existing().status in ['PUBLISHED', 'ARCHIVED']);
       allow list: if existing().status in ['PUBLISHED', 'ARCHIVED'];
       allow create: if isValidId(announcementId)
         && isValidAnnouncement(incoming())
@@ -508,8 +509,8 @@ service cloud.firestore {
     }
 
     match /auditLogs/{logId} {
-      allow get: if isValidId(logId) && (isSuperAdmin() || isCommitteeSessionActor(existing().userId));
-      allow list: if isSuperAdmin() || isCommitteeSessionActor(existing().userId);
+      allow get: if isValidId(logId) && (isSuperAdmin() || resource == null || existing().userRole in ['SUPER_ADMIN', 'COLLECTION_ADMIN', 'MEMBER']);
+      allow list: if isSuperAdmin() || existing().userRole in ['SUPER_ADMIN', 'COLLECTION_ADMIN', 'MEMBER'];
       allow create: if isValidId(logId)
         && isValidAuditLog(incoming())
         && (
@@ -521,7 +522,7 @@ service cloud.firestore {
     }
 
     match /settings/{settingId} {
-      allow get: if isValidId(settingId) && (isSignedIn() || existing().committeeName is string);
+      allow get: if isValidId(settingId) && (isSignedIn() || resource == null || existing().committeeName is string);
       allow list: if isSuperAdmin() || existing().committeeName is string;
       allow create, update: if isValidId(settingId)
         && (isSuperAdmin() || isCommitteeSessionActor(incoming().updatedBy))

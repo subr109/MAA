@@ -58,7 +58,7 @@ import {
   getCurrentISTDateISO,
   isDuplicateTransaction,
 } from '../lib/chandaEngine';
-import { buildCommitteeDataset } from '../lib/committeeData';
+import { buildFreshCommitteeDataset } from '../lib/committeeData';
 import {
   buildReceiptMessageBody,
   buildReminderMessageBody,
@@ -136,7 +136,7 @@ interface MaaContextValue {
   loginWithGoogle: () => Promise<void>;
   loginWithAdminCredentials: (adminId: string, password: string) => Promise<void>;
   enterMemberPortal: (memberIdentifier?: string) => Promise<void>;
-  resetToFreshCommitteeLedger: () => void;
+  resetToFreshCommitteeLedger: () => Promise<void>;
   logout: () => Promise<void>;
   refreshServerHealth: () => Promise<void>;
   // Domain actions
@@ -168,7 +168,7 @@ export const useMaa = () => {
   return ctx;
 };
 
-const DEFAULT_COMMITTEE_DATA = buildCommitteeDataset();
+const DEFAULT_COMMITTEE_DATA = buildFreshCommitteeDataset({ ledgerResetAt: '' });
 
 function sanitizeForId(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120);
@@ -182,9 +182,22 @@ function stripUndefined<T extends object>(obj: T): T {
   return out as T;
 }
 
+function isRecordAfterWatermark(
+  isoTimestamp: string,
+  hasPendingWrites: boolean,
+  watermark?: string
+): boolean {
+  if (!watermark) return true;
+  if (!isoTimestamp) {
+    return hasPendingWrites;
+  }
+  return isoTimestamp > watermark;
+}
+
 const ADMIN_SESSION_STORAGE_KEY = 'maa_mashunda_admin_session_v1';
 const MEMBER_SESSION_STORAGE_KEY = 'maa_mashunda_member_session_v1';
 const ADMIN_STATE_STORAGE_KEY = 'maa_mashunda_admin_state_v1';
+const FRESH_RESET_MARKER_KEY = 'maa_fresh_reset_v2';
 
 interface PersistedLocalCommitteeState {
   users: AppUser[];
@@ -244,7 +257,13 @@ async function ensureFirestoreSeeded(
     try {
       const [settingsSnap, membersSnap] = await Promise.all([
         getDocFromServer(doc(db, 'settings', 'committee')).catch(() => null),
-        getDocs(query(collection(db, 'members'), limit(1))),
+        getDocs(
+          query(
+            collection(db, 'members'),
+            where('status', 'in', ['ACTIVE', 'INACTIVE', 'ARCHIVED']),
+            limit(1)
+          )
+        ),
       ]);
       if ((settingsSnap && settingsSnap.exists()) || !membersSnap.empty) {
         return; // Cloud Firestore already contains live committee data
@@ -446,7 +465,9 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [language, setLanguageState] = useState<Language>('bn');
   const [activePage, setActivePage] = useState<PageId>('dashboard');
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
-  const [selectedMonthKey, setSelectedMonthKey] = useState<string>('2026-11');
+  const [selectedMonthKey, setSelectedMonthKey] = useState<string>(() =>
+    getCurrentISTDateISO().slice(0, 7)
+  );
   const [prefillCollectMemberId, setPrefillCollectMemberId] = useState<string | null>(null);
 
   // Collections State
@@ -536,13 +557,20 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Restore persisted Committee Admin or Member Portal session and immediately attach live Cloud Firestore sync
   useEffect(() => {
     try {
+      // Clear any pre-reset localStorage sample cache once so app starts fresh
+      if (!localStorage.getItem(FRESH_RESET_MARKER_KEY)) {
+        localStorage.removeItem(ADMIN_STATE_STORAGE_KEY);
+        localStorage.removeItem(MEMBER_SESSION_STORAGE_KEY);
+        localStorage.setItem(FRESH_RESET_MARKER_KEY, '1');
+      }
+
       const rawAdminSession = localStorage.getItem(ADMIN_SESSION_STORAGE_KEY);
       if (rawAdminSession) {
         const savedUser = JSON.parse(rawAdminSession) as AppUser;
         const rawState = localStorage.getItem(ADMIN_STATE_STORAGE_KEY);
         const dataset = rawState
           ? (JSON.parse(rawState) as PersistedLocalCommitteeState)
-          : buildCommitteeDataset();
+          : buildFreshCommitteeDataset({ ledgerResetAt: '' });
         // Warm optimistic state while Cloud Firestore onSnapshot connects
         setUsers(dataset.users.some((u) => u.uid === savedUser.uid) ? dataset.users : [savedUser, ...dataset.users]);
         setMembers(dataset.members);
@@ -598,7 +626,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const rawState = localStorage.getItem(ADMIN_STATE_STORAGE_KEY);
         const dataset = rawState
           ? (JSON.parse(rawState) as PersistedLocalCommitteeState)
-          : buildCommitteeDataset();
+          : buildFreshCommitteeDataset({ ledgerResetAt: '' });
         const target = dataset.members.find((m) => m.id === savedMemberId);
         if (target) {
           setUsers([]);
@@ -769,6 +797,8 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   // Attach live Cloud Firestore real-time listeners for BOTH Admin (FIREBASE) and Member Portal (MEMBER_PORTAL)
+  const resetWatermark = settings.ledgerResetAt || '';
+
   useEffect(() => {
     if (!authReady || !currentUser || (mode !== 'FIREBASE' && mode !== 'MEMBER_PORTAL')) return;
 
@@ -779,80 +809,100 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       (currentUser.role === 'SUPER_ADMIN' || currentUser.role === 'COLLECTION_ADMIN');
     const isSuper = mode === 'FIREBASE' && currentUser.role === 'SUPER_ADMIN';
     const targetMemberId = currentUser.memberId || selectedMemberId;
+    const currentMonthKey = getCurrentISTDateISO().slice(0, 7);
 
-    // 1. Settings
-    unsubs.push(
-      onSnapshot(
-        doc(db, 'settings', 'committee'),
-        (snap) => {
-          setFirebaseConnected(true);
-          setLiveSyncStatus('SYNCED');
-          if (snap.exists()) {
-            const d = snap.data();
-            setSettings({
-              ...(DEFAULT_COMMITTEE_DATA.settings as CommitteeSettings),
-              ...d,
-              id: snap.id,
-              updatedAt: d.updatedAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
-            } as CommitteeSettings);
-          }
-        },
-        (err) => handleFirestoreError(err, OperationType.GET, 'settings/committee')
-      )
-    );
-
-    // 2. Collection Months
+    // 1. Collection Months (filtered list query matching Firestore rules; always keep current active month)
     unsubs.push(
       onSnapshot(
         query(collection(db, 'collectionMonths'), where('status', 'in', ['OPEN', 'CLOSED'])),
         (snap) => {
           setLiveSyncStatus('SYNCED');
-          setCollectionMonths(
-            snap.docs.map((d) => ({
-              ...(d.data() as CollectionMonth),
+          const list = snap.docs
+            .map((d) => ({
+              data: d.data(),
               id: d.id,
+              hasPending: d.metadata.hasPendingWrites,
               createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
               updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
             }))
+            .filter(
+              (item) =>
+                item.id === currentMonthKey ||
+                item.data.monthKey === currentMonthKey ||
+                isRecordAfterWatermark(item.createdAt, item.hasPending, resetWatermark)
+            )
+            .map((item) => ({
+              ...(item.data as CollectionMonth),
+              id: item.id,
+              createdAt: item.createdAt,
+              updatedAt: item.updatedAt,
+            }));
+          setCollectionMonths(
+            list.length > 0 ? list : buildFreshCommitteeDataset().collectionMonths
           );
         },
         (err) => handleFirestoreError(err, OperationType.LIST, 'collectionMonths')
       )
     );
 
-    // 3. Announcements
+    // 2. Announcements
     unsubs.push(
       onSnapshot(
         query(collection(db, 'announcements'), where('status', '==', 'PUBLISHED')),
         (snap) => {
           setLiveSyncStatus('SYNCED');
           setAnnouncements(
-            snap.docs.map((d) => ({
-              ...(d.data() as Announcement),
-              id: d.id,
-              createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
-              updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
-            }))
+            snap.docs
+              .map((d) => ({
+                data: d.data(),
+                id: d.id,
+                hasPending: d.metadata.hasPendingWrites,
+                createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+                updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+              }))
+              .filter((item) =>
+                isRecordAfterWatermark(item.createdAt, item.hasPending, resetWatermark)
+              )
+              .map((item) => ({
+                ...(item.data as Announcement),
+                id: item.id,
+                createdAt: item.createdAt,
+                updatedAt: item.updatedAt,
+              }))
           );
         },
         (err) => handleFirestoreError(err, OperationType.LIST, 'announcements')
       )
     );
 
-    // 4. Members, Payments, Ledgers, Receipts
+    // 3. Members, Payments, Ledgers, Receipts, Expenses, WhatsApp Logs
     if (isAdmin) {
       unsubs.push(
         onSnapshot(
-          collection(db, 'members'),
+          query(
+            collection(db, 'members'),
+            where('status', 'in', ['ACTIVE', 'INACTIVE', 'ARCHIVED'])
+          ),
           (snap) => {
             setLiveSyncStatus('SYNCED');
             setMembers(
-              snap.docs.map((d) => ({
-                ...(d.data() as Member),
-                id: d.id,
-                createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
-                updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
-              }))
+              snap.docs
+                .map((d) => ({
+                  data: d.data(),
+                  id: d.id,
+                  hasPending: d.metadata.hasPendingWrites,
+                  createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+                  updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+                }))
+                .filter((item) =>
+                  isRecordAfterWatermark(item.createdAt, item.hasPending, resetWatermark)
+                )
+                .map((item) => ({
+                  ...(item.data as Member),
+                  id: item.id,
+                  createdAt: item.createdAt,
+                  updatedAt: item.updatedAt,
+                }))
             );
           },
           (err) => handleFirestoreError(err, OperationType.LIST, 'members')
@@ -861,16 +911,27 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       unsubs.push(
         onSnapshot(
-          collection(db, 'payments'),
+          query(collection(db, 'payments'), where('status', 'in', ['COMPLETED', 'REVERSED'])),
           (snap) => {
             setLiveSyncStatus('SYNCED');
             setPayments(
-              snap.docs.map((d) => ({
-                ...(d.data() as Payment),
-                id: d.id,
-                createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
-                updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
-              }))
+              snap.docs
+                .map((d) => ({
+                  data: d.data(),
+                  id: d.id,
+                  hasPending: d.metadata.hasPendingWrites,
+                  createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+                  updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+                }))
+                .filter((item) =>
+                  isRecordAfterWatermark(item.createdAt, item.hasPending, resetWatermark)
+                )
+                .map((item) => ({
+                  ...(item.data as Payment),
+                  id: item.id,
+                  createdAt: item.createdAt,
+                  updatedAt: item.updatedAt,
+                }))
             );
           },
           (err) => handleFirestoreError(err, OperationType.LIST, 'payments')
@@ -879,15 +940,25 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       unsubs.push(
         onSnapshot(
-          collection(db, 'memberLedgers'),
+          query(collection(db, 'memberLedgers'), where('status', 'in', ['UNPAID', 'PARTIAL', 'PAID'])),
           (snap) => {
             setLiveSyncStatus('SYNCED');
             setLedgers(
-              snap.docs.map((d) => ({
-                ...(d.data() as MemberLedger),
-                id: d.id,
-                updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
-              }))
+              snap.docs
+                .map((d) => ({
+                  data: d.data(),
+                  id: d.id,
+                  hasPending: d.metadata.hasPendingWrites,
+                  updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+                }))
+                .filter((item) =>
+                  isRecordAfterWatermark(item.updatedAt, item.hasPending, resetWatermark)
+                )
+                .map((item) => ({
+                  ...(item.data as MemberLedger),
+                  id: item.id,
+                  updatedAt: item.updatedAt,
+                }))
             );
           },
           (err) => handleFirestoreError(err, OperationType.LIST, 'memberLedgers')
@@ -896,15 +967,25 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       unsubs.push(
         onSnapshot(
-          collection(db, 'receipts'),
+          query(collection(db, 'receipts'), where('status', 'in', ['ACTIVE', 'VOID'])),
           (snap) => {
             setLiveSyncStatus('SYNCED');
             setReceipts(
-              snap.docs.map((d) => ({
-                ...(d.data() as Receipt),
-                id: d.id,
-                createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
-              }))
+              snap.docs
+                .map((d) => ({
+                  data: d.data(),
+                  id: d.id,
+                  hasPending: d.metadata.hasPendingWrites,
+                  createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+                }))
+                .filter((item) =>
+                  isRecordAfterWatermark(item.createdAt, item.hasPending, resetWatermark)
+                )
+                .map((item) => ({
+                  ...(item.data as Receipt),
+                  id: item.id,
+                  createdAt: item.createdAt,
+                }))
             );
           },
           (err) => handleFirestoreError(err, OperationType.LIST, 'receipts')
@@ -913,15 +994,26 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       unsubs.push(
         onSnapshot(
-          collection(db, 'expenses'),
+          query(collection(db, 'expenses'), where('status', 'in', ['ACTIVE', 'ARCHIVED'])),
           (snap) => {
             setExpenses(
-              snap.docs.map((d) => ({
-                ...(d.data() as Expense),
-                id: d.id,
-                createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
-                updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
-              }))
+              snap.docs
+                .map((d) => ({
+                  data: d.data(),
+                  id: d.id,
+                  hasPending: d.metadata.hasPendingWrites,
+                  createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+                  updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+                }))
+                .filter((item) =>
+                  isRecordAfterWatermark(item.createdAt, item.hasPending, resetWatermark)
+                )
+                .map((item) => ({
+                  ...(item.data as Expense),
+                  id: item.id,
+                  createdAt: item.createdAt,
+                  updatedAt: item.updatedAt,
+                }))
             );
           },
           (err) => handleFirestoreError(err, OperationType.LIST, 'expenses')
@@ -930,105 +1022,36 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       unsubs.push(
         onSnapshot(
-          collection(db, 'whatsappNotifications'),
+          query(
+            collection(db, 'whatsappNotifications'),
+            where('status', 'in', ['QUEUED', 'SENT', 'DELIVERED', 'READ', 'FAILED'])
+          ),
           (snap) => {
             setWhatsappNotifications(
-              snap.docs.map((d) => ({
-                ...(d.data() as WhatsappNotification),
-                id: d.id,
-                createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
-                updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
-              }))
+              snap.docs
+                .map((d) => ({
+                  data: d.data(),
+                  id: d.id,
+                  hasPending: d.metadata.hasPendingWrites,
+                  createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+                  updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+                }))
+                .filter((item) =>
+                  isRecordAfterWatermark(item.createdAt, item.hasPending, resetWatermark)
+                )
+                .map((item) => ({
+                  ...(item.data as WhatsappNotification),
+                  id: item.id,
+                  createdAt: item.createdAt,
+                  updatedAt: item.updatedAt,
+                }))
             );
           },
           (err) => handleFirestoreError(err, OperationType.LIST, 'whatsappNotifications')
         )
       );
     } else {
-      // Member Portal: keep PII strictly scoped to logged-in member's own records
-      if (targetMemberId) {
-        unsubs.push(
-          onSnapshot(
-            doc(db, 'members', targetMemberId),
-            (snap) => {
-              setLiveSyncStatus('SYNCED');
-              if (snap.exists()) {
-                const mem = {
-                  ...(snap.data() as Member),
-                  id: snap.id,
-                  createdAt: snap.data().createdAt?.toDate?.()?.toISOString?.() || '',
-                  updatedAt: snap.data().updatedAt?.toDate?.()?.toISOString?.() || '',
-                };
-                setMembers([mem]);
-              }
-            },
-            (err) => handleFirestoreError(err, OperationType.GET, `members/${targetMemberId}`)
-          )
-        );
-      }
-
-      const paymentQ = targetMemberId
-        ? query(collection(db, 'payments'), where('memberId', '==', targetMemberId))
-        : query(collection(db, 'payments'), where('memberUserUid', '==', currentUser.uid));
-      unsubs.push(
-        onSnapshot(
-          paymentQ,
-          (snap) => {
-            setLiveSyncStatus('SYNCED');
-            setPayments(
-              snap.docs.map((d) => ({
-                ...(d.data() as Payment),
-                id: d.id,
-                createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
-                updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
-              }))
-            );
-          },
-          (err) => handleFirestoreError(err, OperationType.LIST, 'payments')
-        )
-      );
-
-      const ledgerQ = targetMemberId
-        ? query(collection(db, 'memberLedgers'), where('memberId', '==', targetMemberId))
-        : query(collection(db, 'memberLedgers'), where('memberUserUid', '==', currentUser.uid));
-      unsubs.push(
-        onSnapshot(
-          ledgerQ,
-          (snap) => {
-            setLiveSyncStatus('SYNCED');
-            setLedgers(
-              snap.docs.map((d) => ({
-                ...(d.data() as MemberLedger),
-                id: d.id,
-                updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
-              }))
-            );
-          },
-          (err) => handleFirestoreError(err, OperationType.LIST, 'memberLedgers')
-        )
-      );
-
-      const receiptQ = targetMemberId
-        ? query(collection(db, 'receipts'), where('memberId', '==', targetMemberId))
-        : query(collection(db, 'receipts'), where('memberUserUid', '==', currentUser.uid));
-      unsubs.push(
-        onSnapshot(
-          receiptQ,
-          (snap) => {
-            setLiveSyncStatus('SYNCED');
-            setReceipts(
-              snap.docs.map((d) => ({
-                ...(d.data() as Receipt),
-                id: d.id,
-                createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
-              }))
-            );
-          },
-          (err) => handleFirestoreError(err, OperationType.LIST, 'receipts')
-        )
-      );
-
-      // Non-PII Live Committee Totals so Members see live fund totals without viewing other members' PII
+      // Member Portal: single-field rule-compliant queries scoped cleanly to member + non-PII fund summary
       let latestActiveMembers = 0;
       let latestMonthExpected = 0;
       let latestMonthCollected = 0;
@@ -1049,69 +1072,188 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       unsubs.push(
         onSnapshot(
-          collection(db, 'members'),
+          query(
+            collection(db, 'members'),
+            where('status', 'in', ['ACTIVE', 'INACTIVE', 'ARCHIVED'])
+          ),
           (snap) => {
-            latestActiveMembers = snap.docs.filter(
-              (d) => d.data().status === 'ACTIVE'
+            setLiveSyncStatus('SYNCED');
+            const freshDocs = snap.docs
+              .map((d) => ({
+                data: d.data(),
+                id: d.id,
+                hasPending: d.metadata.hasPendingWrites,
+                createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+                updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+              }))
+              .filter((item) =>
+                isRecordAfterWatermark(item.createdAt, item.hasPending, resetWatermark)
+              );
+
+            latestActiveMembers = freshDocs.filter(
+              (item) => item.data.status === 'ACTIVE'
             ).length;
             recomputePublicSummary();
+
+            const ownMember = targetMemberId
+              ? freshDocs.find((item) => item.id === targetMemberId)
+              : freshDocs.find((item) => item.data.userUid === currentUser.uid);
+            if (ownMember) {
+              setMembers([
+                {
+                  ...(ownMember.data as Member),
+                  id: ownMember.id,
+                  createdAt: ownMember.createdAt,
+                  updatedAt: ownMember.updatedAt,
+                },
+              ]);
+            } else {
+              setMembers([]);
+            }
           },
-          () => {}
+          (err) => handleFirestoreError(err, OperationType.LIST, 'members')
         )
       );
 
       unsubs.push(
         onSnapshot(
-          query(collection(db, 'memberLedgers'), where('monthKey', '==', selectedMonthKey)),
+          query(collection(db, 'payments'), where('status', 'in', ['COMPLETED', 'REVERSED'])),
           (snap) => {
+            setLiveSyncStatus('SYNCED');
+            const freshDocs = snap.docs
+              .map((d) => ({
+                data: d.data(),
+                id: d.id,
+                hasPending: d.metadata.hasPendingWrites,
+                createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+                updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+              }))
+              .filter((item) =>
+                isRecordAfterWatermark(item.createdAt, item.hasPending, resetWatermark)
+              );
+
+            let sum = 0;
+            for (const item of freshDocs) {
+              if (item.data.status === 'COMPLETED') {
+                sum += Number(item.data.amountPaise || 0);
+              }
+            }
+            latestAllCollected = sum;
+            recomputePublicSummary();
+
+            setPayments(
+              freshDocs
+                .filter((item) =>
+                  targetMemberId
+                    ? item.data.memberId === targetMemberId
+                    : item.data.memberUserUid === currentUser.uid
+                )
+                .map((item) => ({
+                  ...(item.data as Payment),
+                  id: item.id,
+                  createdAt: item.createdAt,
+                  updatedAt: item.updatedAt,
+                }))
+            );
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, 'payments')
+        )
+      );
+
+      unsubs.push(
+        onSnapshot(
+          query(collection(db, 'memberLedgers'), where('status', 'in', ['UNPAID', 'PARTIAL', 'PAID'])),
+          (snap) => {
+            setLiveSyncStatus('SYNCED');
+            const freshDocs = snap.docs
+              .map((d) => ({
+                data: d.data(),
+                id: d.id,
+                hasPending: d.metadata.hasPendingWrites,
+                updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+              }))
+              .filter((item) =>
+                isRecordAfterWatermark(item.updatedAt, item.hasPending, resetWatermark)
+              );
+
             let exp = 0;
             let col = 0;
-            snap.docs.forEach((d) => {
-              const data = d.data();
-              exp += Number(data.duePaise || 0);
-              col += Number(data.paidPaise || 0);
-            });
+            for (const item of freshDocs) {
+              if (item.data.monthKey === selectedMonthKey) {
+                exp += Number(item.data.duePaise || 0);
+                col += Number(item.data.paidPaise || 0);
+              }
+            }
             latestMonthExpected = exp;
             latestMonthCollected = col;
             recomputePublicSummary();
+
+            setLedgers(
+              freshDocs
+                .filter((item) =>
+                  targetMemberId
+                    ? item.data.memberId === targetMemberId
+                    : item.data.memberUserUid === currentUser.uid
+                )
+                .map((item) => ({
+                  ...(item.data as MemberLedger),
+                  id: item.id,
+                  updatedAt: item.updatedAt,
+                }))
+            );
           },
-          () => {}
+          (err) => handleFirestoreError(err, OperationType.LIST, 'memberLedgers')
         )
       );
 
       unsubs.push(
         onSnapshot(
-          collection(db, 'payments'),
+          query(collection(db, 'receipts'), where('status', 'in', ['ACTIVE', 'VOID'])),
           (snap) => {
-            let sum = 0;
-            snap.docs.forEach((d) => {
-              const data = d.data();
-              if (data.status === 'COMPLETED') {
-                sum += Number(data.amountPaise || 0);
-              }
-            });
-            latestAllCollected = sum;
-            recomputePublicSummary();
+            setLiveSyncStatus('SYNCED');
+            setReceipts(
+              snap.docs
+                .map((d) => ({
+                  data: d.data(),
+                  id: d.id,
+                  hasPending: d.metadata.hasPendingWrites,
+                  createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+                }))
+                .filter((item) =>
+                  isRecordAfterWatermark(item.createdAt, item.hasPending, resetWatermark) &&
+                  (targetMemberId
+                    ? item.data.memberId === targetMemberId
+                    : item.data.memberUserUid === currentUser.uid)
+                )
+                .map((item) => ({
+                  ...(item.data as Receipt),
+                  id: item.id,
+                  createdAt: item.createdAt,
+                }))
+            );
           },
-          () => {}
+          (err) => handleFirestoreError(err, OperationType.LIST, 'receipts')
         )
       );
 
       unsubs.push(
         onSnapshot(
-          collection(db, 'expenses'),
+          query(collection(db, 'expenses'), where('status', 'in', ['ACTIVE', 'ARCHIVED'])),
           (snap) => {
             let sum = 0;
-            snap.docs.forEach((d) => {
-              const data = d.data();
-              if (data.status === 'ACTIVE') {
-                sum += Number(data.amountPaise || 0);
+            for (const d of snap.docs) {
+              const createdIso = d.data().createdAt?.toDate?.()?.toISOString?.() || '';
+              if (!isRecordAfterWatermark(createdIso, d.metadata.hasPendingWrites, resetWatermark)) {
+                continue;
               }
-            });
+              if (d.data().status === 'ACTIVE') {
+                sum += Number(d.data().amountPaise || 0);
+              }
+            }
             latestTotalExpenses = sum;
             recomputePublicSummary();
           },
-          () => {}
+          (err) => handleFirestoreError(err, OperationType.LIST, 'expenses')
         )
       );
     }
@@ -1138,14 +1280,27 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       unsubs.push(
         onSnapshot(
-          collection(db, 'auditLogs'),
+          query(
+            collection(db, 'auditLogs'),
+            where('userRole', 'in', ['SUPER_ADMIN', 'COLLECTION_ADMIN', 'MEMBER'])
+          ),
           (snap) => {
             setAuditLogs(
-              snap.docs.map((d) => ({
-                ...(d.data() as AuditLog),
-                id: d.id,
-                createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
-              }))
+              snap.docs
+                .map((d) => ({
+                  data: d.data(),
+                  id: d.id,
+                  hasPending: d.metadata.hasPendingWrites,
+                  createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+                }))
+                .filter((item) =>
+                  isRecordAfterWatermark(item.createdAt, item.hasPending, resetWatermark)
+                )
+                .map((item) => ({
+                  ...(item.data as AuditLog),
+                  id: item.id,
+                  createdAt: item.createdAt,
+                }))
             );
           },
           (err) => handleFirestoreError(err, OperationType.LIST, 'auditLogs')
@@ -1156,7 +1311,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => {
       unsubs.forEach((u) => u());
     };
-  }, [authReady, mode, currentUser, firebaseUser, selectedMemberId, selectedMonthKey]);
+  }, [authReady, mode, currentUser, firebaseUser, selectedMemberId, selectedMonthKey, resetWatermark]);
 
   const loginWithGoogle = useCallback(async () => {
     localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
@@ -1245,9 +1400,9 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const rawState = localStorage.getItem(ADMIN_STATE_STORAGE_KEY);
       dataset = rawState
         ? (JSON.parse(rawState) as PersistedLocalCommitteeState)
-        : buildCommitteeDataset();
+        : buildFreshCommitteeDataset({ ledgerResetAt: settings.ledgerResetAt || '' });
     } catch {
-      dataset = buildCommitteeDataset();
+      dataset = buildFreshCommitteeDataset({ ledgerResetAt: settings.ledgerResetAt || '' });
     }
 
     const adminUser = authenticatedUser;
@@ -1277,7 +1432,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const enterMemberPortal = useCallback(async (memberIdentifier?: string) => {
     localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
 
-    // Fetch live members, months, announcements & settings directly from Cloud Firestore when online
+    // Fetch live members, months & settings directly from Cloud Firestore when online
     let sourceMembers: Member[] = [];
     let sourceMonths: CollectionMonth[] = [];
     let sourceLedgers: MemberLedger[] = [];
@@ -1289,23 +1444,16 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     try {
       const [mSnap, cmSnap, sSnap] = await Promise.all([
-        getDocs(collection(db, 'members')),
+        getDocs(
+          query(
+            collection(db, 'members'),
+            where('status', 'in', ['ACTIVE', 'INACTIVE', 'ARCHIVED'])
+          )
+        ),
         getDocs(query(collection(db, 'collectionMonths'), where('status', 'in', ['OPEN', 'CLOSED']))),
         getDoc(doc(db, 'settings', 'committee')),
       ]);
 
-      sourceMembers = mSnap.docs.map((d) => ({
-        ...(d.data() as Member),
-        id: d.id,
-        createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
-        updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
-      }));
-      sourceMonths = cmSnap.docs.map((d) => ({
-        ...(d.data() as CollectionMonth),
-        id: d.id,
-        createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
-        updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
-      }));
       if (sSnap.exists()) {
         const d = sSnap.data();
         sourceSettings = {
@@ -1315,7 +1463,32 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           updatedAt: d.updatedAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
         } as CommitteeSettings;
       }
-      fetchedFromCloud = sourceMembers.length > 0;
+
+      const watermark = sourceSettings?.ledgerResetAt || '';
+
+      sourceMembers = mSnap.docs
+        .map((d) => ({
+          data: d.data(),
+          id: d.id,
+          hasPending: d.metadata.hasPendingWrites,
+          createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+          updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+        }))
+        .filter((item) => isRecordAfterWatermark(item.createdAt, item.hasPending, watermark))
+        .map((item) => ({
+          ...(item.data as Member),
+          id: item.id,
+          createdAt: item.createdAt,
+          updatedAt: item.updatedAt,
+        }));
+
+      sourceMonths = cmSnap.docs.map((d) => ({
+        ...(d.data() as CollectionMonth),
+        id: d.id,
+        createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+        updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+      }));
+      fetchedFromCloud = true;
     } catch {
       fetchedFromCloud = false;
     }
@@ -1326,9 +1499,9 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const rawState = localStorage.getItem(ADMIN_STATE_STORAGE_KEY);
         fallbackDataset = rawState
           ? (JSON.parse(rawState) as PersistedLocalCommitteeState)
-          : buildCommitteeDataset();
+          : buildFreshCommitteeDataset({ ledgerResetAt: '' });
       } catch {
-        fallbackDataset = buildCommitteeDataset();
+        fallbackDataset = buildFreshCommitteeDataset({ ledgerResetAt: '' });
       }
       sourceMembers = fallbackDataset.members;
       sourceMonths = fallbackDataset.collectionMonths;
@@ -1361,7 +1534,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         sourceMembers.find((m) => m.status === 'ACTIVE') || sourceMembers[0];
       if (!targetMember) {
         throw new Error(
-          'No registered members exist yet. Please ask the committee admin to add members first.'
+          'এখনো কোনো সদস্য নিবন্ধিত হয়নি। অনুগ্রহ করে অ্যাডমিন প্যানেল থেকে প্রথমে সদস্য যোগ করুন। (No registered members exist yet.)'
         );
       }
     }
@@ -1396,23 +1569,88 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActivePage('member-details');
   }, []);
 
-  const resetToFreshCommitteeLedger = useCallback(() => {
-    if (mode !== 'LOCAL_ADMIN') return;
-    const base = buildCommitteeDataset();
-    const adminUsers = currentUser ? [currentUser] : base.users.slice(0, 1);
+  const resetToFreshCommitteeLedger = useCallback(async () => {
+    const actorUid = currentUser?.uid || 'committee-super-admin';
     const currentMonthKey = getCurrentISTDateISO().slice(0, 7);
+    const freshDataset = buildFreshCommitteeDataset({
+      ledgerResetAt: new Date().toISOString(),
+    });
     const freshMonth: CollectionMonth = {
-      id: currentMonthKey,
-      monthKey: currentMonthKey,
-      label: formatMonthLabel(currentMonthKey, 'en'),
-      financialYear: settings.financialYear || '2026-27',
-      defaultAmountPaise: settings.defaultMonthlyChandaPaise || 50000,
+      ...freshDataset.collectionMonths[0],
+      financialYear: settings.financialYear || freshDataset.settings.financialYear,
+      defaultAmountPaise:
+        settings.defaultMonthlyChandaPaise || freshDataset.settings.defaultMonthlyChandaPaise,
       dueDate: `${currentMonthKey}-${String(settings.dueDay || 10).padStart(2, '0')}`,
-      status: 'OPEN',
-      createdBy: currentUser?.uid || 'committee-super-admin',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdBy: actorUid,
     };
+
+    if (mode === 'FIREBASE') {
+      try {
+        // 1. Write settings with serverTimestamp and read exact server time to avoid clock skew
+        const { id: _sid, ...baseSettingsPayload } = settings;
+        const settingsRef = doc(db, 'settings', 'committee');
+        await setDoc(
+          settingsRef,
+          stripUndefined({
+            ...baseSettingsPayload,
+            updatedBy: actorUid,
+            updatedAt: serverTimestamp(),
+          })
+        );
+        const serverSnap = await getDocFromServer(settingsRef).catch(() => null);
+        const serverResetIso =
+          serverSnap?.data()?.updatedAt?.toDate?.()?.toISOString?.() ||
+          new Date().toISOString();
+
+        await setDoc(
+          settingsRef,
+          stripUndefined({
+            ...baseSettingsPayload,
+            ledgerResetAt: serverResetIso,
+            updatedBy: actorUid,
+            updatedAt: serverTimestamp(),
+          })
+        );
+
+        // 2. Ensure the current active collection month exists in Firestore
+        const monthRef = doc(db, 'collectionMonths', currentMonthKey);
+        const existingMonthSnap = await getDoc(monthRef).catch(() => null);
+        if (!existingMonthSnap || !existingMonthSnap.exists()) {
+          const { id: _mid, ...cmPayload } = freshMonth;
+          await setDoc(
+            monthRef,
+            stripUndefined({
+              ...cmPayload,
+              createdBy: actorUid,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            })
+          );
+        }
+
+        setSettings((prev) => ({
+          ...prev,
+          ledgerResetAt: serverResetIso,
+          updatedBy: actorUid,
+          updatedAt: serverResetIso,
+        }));
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, 'settings/committee');
+      }
+    } else {
+      setSettings((prev) => ({
+        ...prev,
+        ledgerResetAt: new Date().toISOString(),
+        updatedBy: actorUid,
+        updatedAt: new Date().toISOString(),
+      }));
+    }
+
+    localStorage.removeItem(ADMIN_STATE_STORAGE_KEY);
+    localStorage.removeItem(MEMBER_SESSION_STORAGE_KEY);
+    localStorage.setItem(FRESH_RESET_MARKER_KEY, '1');
+
+    const adminUsers = currentUser ? [currentUser] : [];
     setUsers(adminUsers);
     setMembers([]);
     setCollectionMonths([freshMonth]);
@@ -1424,7 +1662,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setAnnouncements([]);
     setAuditLogs([]);
     setSelectedMonthKey(currentMonthKey);
-  }, [mode, currentUser, settings.financialYear, settings.defaultMonthlyChandaPaise, settings.dueDay]);
+  }, [mode, currentUser, settings]);
 
   const logout = useCallback(async () => {
     localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);

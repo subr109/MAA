@@ -258,6 +258,7 @@
         "whatsappDefaultLanguage": { "type": "string", "enum": ["bn", "en"] },
         "defaultLanguage": { "type": "string", "enum": ["bn", "en"] },
         "theme": { "type": "string", "enum": ["light", "dark"] },
+        "ledgerResetAt": { "type": "string", "maxLength": 40 },
         "updatedBy": { "type": "string", "maxLength": 128 },
         "updatedAt": { "type": "string", "format": "date-time" }
       },

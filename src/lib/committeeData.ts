@@ -11,7 +11,13 @@ import {
   Receipt,
   WhatsappNotification,
 } from '../types/maa';
-import { deriveLedgerStatus, formatDateIN, formatINR, formatMonthLabel } from './chandaEngine';
+import {
+  deriveLedgerStatus,
+  formatDateIN,
+  formatINR,
+  formatMonthLabel,
+  getCurrentISTDateISO,
+} from './chandaEngine';
 
 export function buildCommitteeDataset() {
   const nowIso = '2026-11-18T08:30:00.000Z';
@@ -583,3 +589,67 @@ export function buildCommitteeDataset() {
     auditLogs,
   };
 }
+
+export function buildFreshCommitteeDataset(options?: { ledgerResetAt?: string }) {
+  const nowIso = new Date().toISOString();
+  const currentMonthKey = getCurrentISTDateISO().slice(0, 7);
+  const yearNum = Number(currentMonthKey.slice(0, 4)) || 2026;
+  const monthNum = Number(currentMonthKey.slice(5, 7)) || 11;
+  const fyStart = monthNum >= 4 ? yearNum : yearNum - 1;
+  const financialYear = `${fyStart}-${String((fyStart + 1) % 100).padStart(2, '0')}`;
+
+  const settings: CommitteeSettings = {
+    id: 'committee',
+    committeeName: 'শ্রী শ্রী শ্যামা পূজা মাশুন্ডা বুনিয়াদি স্কুল মাঠ কমিটি',
+    committeeAddress: 'মাশুন্ডা বুনিয়াদি স্কুল মাঠ (Mashunda Buniyadi School Math)',
+    contactNumber: '',
+    email: '',
+    pujaYear: `${fyStart}-${fyStart + 1}`,
+    defaultMonthlyChandaPaise: 50000, // ₹500
+    financialYear,
+    dueDay: 10,
+    whatsappEnabled: true,
+    whatsappPhoneNumberId: '',
+    whatsappBusinessAccountId: '',
+    whatsappApiVersion: 'v21.0',
+    whatsappReceiptTemplate: 'maa_chanda_receipt_bn',
+    whatsappReminderTemplate: 'maa_chanda_reminder_bn',
+    whatsappAnnouncementTemplate: 'maa_puja_announcement_bn',
+    whatsappDefaultLanguage: 'bn',
+    defaultLanguage: 'bn',
+    theme: 'light',
+    ledgerResetAt: options?.ledgerResetAt || nowIso,
+    updatedBy: 'committee-super-admin',
+    updatedAt: nowIso,
+  };
+
+  const collectionMonths: CollectionMonth[] = [
+    {
+      id: currentMonthKey,
+      monthKey: currentMonthKey,
+      label: formatMonthLabel(currentMonthKey, 'en'),
+      financialYear,
+      defaultAmountPaise: settings.defaultMonthlyChandaPaise,
+      dueDate: `${currentMonthKey}-10`,
+      status: 'OPEN',
+      createdBy: 'committee-super-admin',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    },
+  ];
+
+  return {
+    users: [] as AppUser[],
+    settings,
+    collectionMonths,
+    members: [] as Member[],
+    ledgers: [] as MemberLedger[],
+    payments: [] as Payment[],
+    receipts: [] as Receipt[],
+    expenses: [] as Expense[],
+    whatsappNotifications: [] as WhatsappNotification[],
+    announcements: [] as Announcement[],
+    auditLogs: [] as AuditLog[],
+  };
+}
+

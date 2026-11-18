@@ -610,7 +610,7 @@ export const AuditLogsPage: React.FC = () => {
  * ========================================================= */
 export const SettingsPage: React.FC = () => {
   const {
-    mode,
+    currentUser,
     language,
     setLanguage,
     settings,
@@ -628,6 +628,7 @@ export const SettingsPage: React.FC = () => {
   } = useMaa();
 
   const [confirmFreshReset, setConfirmFreshReset] = useState(false);
+  const [resettingLedger, setResettingLedger] = useState(false);
 
   const [committeeName, setCommitteeName] = useState(settings.committeeName);
   const [committeeAddress, setCommitteeAddress] = useState(settings.committeeAddress || '');
@@ -1004,12 +1005,12 @@ export const SettingsPage: React.FC = () => {
             </button>
           </div>
 
-          {mode !== 'FIREBASE' && (
+          {currentUser?.role === 'SUPER_ADMIN' && (
             <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
               <p className="text-xs text-slate-500">
                 {language === 'bn'
-                  ? 'নমুনা তথ্য মুছে সম্পূর্ণ নতুন করে কমিটির হিসাব শুরু করতে চাইলে নিচের বোতাম ব্যবহার করুন।'
-                  : 'Want to start with an empty committee ledger? Clear sample members, payments, and expenses.'}
+                  ? 'সকল লগ, নমুনা তথ্য, রসিদ ও হিসাব মুছে সম্পূর্ণ নতুন করে কমিটির খাতা শুরু করতে চাইলে নিচের বোতাম ব্যবহার করুন।'
+                  : 'Clear all logs, sample members, payments, receipts, and expenses to start completely fresh.'}
               </p>
               {!confirmFreshReset ? (
                 <button
@@ -1017,27 +1018,42 @@ export const SettingsPage: React.FC = () => {
                   onClick={() => setConfirmFreshReset(true)}
                   className="px-3 py-1.5 text-xs font-medium rounded-lg border border-red-200 text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/40 whitespace-nowrap"
                 >
-                  {language === 'bn' ? 'নমুনা তথ্য মুছুন (নতুন শুরু)' : 'Clear Sample Data'}
+                  {language === 'bn' ? 'সব লগ ও ডেটা মুছে নতুন শুরু করুন' : 'Delete All Logs & Data'}
                 </button>
               ) : (
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => {
-                      resetToFreshCommitteeLedger();
-                      setConfirmFreshReset(false);
-                      setSavedNotice(
-                        language === 'bn'
-                          ? 'নমুনা তথ্য মুছে নতুন কমিটির হিসাব শুরু করা হয়েছে।'
-                          : 'Cleared sample records. Fresh committee ledger ready.'
-                      );
+                    disabled={resettingLedger}
+                    onClick={async () => {
+                      setResettingLedger(true);
+                      try {
+                        await resetToFreshCommitteeLedger();
+                        setConfirmFreshReset(false);
+                        setSavedNotice(
+                          language === 'bn'
+                            ? 'সকল লগ ও পুরোনো ডেটা মুছে সম্পূর্ণ নতুন কমিটির হিসাব শুরু করা হয়েছে।'
+                            : 'All logs and records cleared. Fresh committee ledger is ready to use.'
+                        );
+                      } catch (err) {
+                        setSavedNotice(
+                          err instanceof Error ? err.message : 'Failed to reset committee ledger'
+                        );
+                      } finally {
+                        setResettingLedger(false);
+                      }
                     }}
-                    className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 whitespace-nowrap"
+                    className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-60 whitespace-nowrap"
                   >
-                    {language === 'bn' ? 'হ্যাঁ, সব নমুনা মুছুন' : 'Confirm Clear All'}
+                    {resettingLedger
+                      ? t(language, 'loading')
+                      : language === 'bn'
+                        ? 'হ্যাঁ, সব মুছে নতুন শুরু করুন'
+                        : 'Confirm Delete All'}
                   </button>
                   <button
                     type="button"
+                    disabled={resettingLedger}
                     onClick={() => setConfirmFreshReset(false)}
                     className="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 whitespace-nowrap"
                   >
