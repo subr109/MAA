@@ -87,16 +87,19 @@ define(['./workbox-afac4cd2'], (function (workbox) { 'use strict';
     "revision": "5293359c8faa395ad725777d21abb387"
   }, {
     "url": "index.html",
-    "revision": "cd49c8cf691e166262a80351bced38fc"
+    "revision": "71aad00fffc9f148da65f4c008a4cc15"
   }, {
     "url": "icon.svg",
     "revision": "47ba6b4decbac46fac18282681ec2808"
+  }, {
+    "url": "favicon.ico",
+    "revision": "9d19fe675fdba0d53a32de658adc3131"
   }, {
     "url": "apple-touch-icon.png",
     "revision": "2029e26da9a76ccb65bb679086363f24"
   }, {
     "url": "404.html",
-    "revision": "cd49c8cf691e166262a80351bced38fc"
+    "revision": "71aad00fffc9f148da65f4c008a4cc15"
   }, {
     "url": "src/assets/images/puja_heritage_banner_1794999344685.jpg",
     "revision": "9700009a71c6c3da83282814d49621b4"
@@ -116,16 +119,16 @@ define(['./workbox-afac4cd2'], (function (workbox) { 'use strict';
     "url": "assets/maa_durga_emblem_1794999344327-ByCdN9sP.jpg",
     "revision": null
   }, {
-    "url": "assets/index.es-C9V3HUoS.js",
+    "url": "assets/index.es-CQJCURDN.js",
     "revision": null
   }, {
-    "url": "assets/index-DHMg7x-A.js",
+    "url": "assets/index-D-oCEJ6o.js",
     "revision": null
   }, {
-    "url": "assets/index-CjSLI0cW.css",
+    "url": "assets/index-CfwSmZ9W.css",
     "revision": null
   }, {
-    "url": "assets/html2canvas-C3rruN8s.js",
+    "url": "assets/html2canvas-DMbf0IS1.js",
     "revision": null
   }, {
     "url": "apple-touch-icon.png",

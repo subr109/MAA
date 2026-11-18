@@ -22,6 +22,7 @@ export const LoginPage: React.FC = () => {
     loginWithAdminCredentials,
     enterMemberPortal,
     settings,
+    firebaseConnected,
   } = useMaa();
 
   const [adminId, setAdminId] = useState('');
@@ -29,6 +30,7 @@ export const LoginPage: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [memberLookup, setMemberLookup] = useState('');
   const [adminLoading, setAdminLoading] = useState(false);
+  const [memberLoading, setMemberLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const committeeTitle = settings.committeeName || DEFAULT_COMMITTEE_NAME;
@@ -48,15 +50,18 @@ export const LoginPage: React.FC = () => {
     }
   };
 
-  const handleMemberPortalSubmit = (e: React.FormEvent) => {
+  const handleMemberPortalSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+    setMemberLoading(true);
     try {
-      enterMemberPortal(memberLookup);
+      await enterMemberPortal(memberLookup);
     } catch (err) {
       setErrorMsg(
         err instanceof Error ? err.message : 'Unable to open Member Portal'
       );
+    } finally {
+      setMemberLoading(false);
     }
   };
 
@@ -128,9 +133,17 @@ export const LoginPage: React.FC = () => {
                 <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100 leading-snug">
                   {committeeTitle}
                 </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  {t(language, 'appFullName')}
-                </p>
+                <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {t(language, 'appFullName')}
+                  </p>
+                  {firebaseConnected && (
+                    <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                      {language === 'bn' ? 'লাইভ অনলাইন' : 'Live Online'}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
             <PWAInstallButton variant="banner" />
@@ -264,12 +277,15 @@ export const LoginPage: React.FC = () => {
 
             <button
               type="submit"
-              className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-semibold transition-colors whitespace-nowrap"
+              disabled={memberLoading}
+              className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-semibold transition-colors disabled:opacity-60 whitespace-nowrap"
             >
               <Users className="w-4 h-4" />
-              {language === 'bn'
-                ? 'সদস্য পোর্টালে প্রবেশ করুন'
-                : 'Open Member Portal'}
+              {memberLoading
+                ? t(language, 'loading')
+                : language === 'bn'
+                  ? 'সদস্য পোর্টালে প্রবেশ করুন'
+                  : 'Open Member Portal'}
             </button>
           </form>
         </div>

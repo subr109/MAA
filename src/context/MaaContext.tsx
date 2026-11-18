@@ -9,6 +9,9 @@ import {
   collection,
   doc,
   getDoc,
+  getDocFromServer,
+  getDocs,
+  limit,
   onSnapshot,
   query,
   runTransaction,
@@ -89,10 +92,21 @@ export interface RecordPaymentOutput {
   whatsappNotification?: WhatsappNotification;
 }
 
+export interface LiveCommitteeSummary {
+  activeMembersCount: number;
+  monthExpectedPaise: number;
+  monthCollectedPaise: number;
+  totalCollectedAllMonthsPaise: number;
+  totalExpensesPaise: number;
+  availableBalancePaise: number;
+  lastSyncedAt: string;
+}
+
 interface MaaContextValue {
   mode: 'NONE' | 'MEMBER_PORTAL' | 'LOCAL_ADMIN' | 'FIREBASE';
   authReady: boolean;
   firebaseConnected: boolean;
+  liveSyncStatus: 'SYNCED' | 'CONNECTING' | 'OFFLINE';
   currentUser: AppUser | null;
   language: Language;
   setLanguage: (lang: Language) => void;
@@ -116,11 +130,12 @@ interface MaaContextValue {
   announcements: Announcement[];
   auditLogs: AuditLog[];
   settings: CommitteeSettings;
+  liveCommitteeSummary: LiveCommitteeSummary;
   serverWhatsappHealth: ServerWhatsappHealth;
   // Auth actions
   loginWithGoogle: () => Promise<void>;
   loginWithAdminCredentials: (adminId: string, password: string) => Promise<void>;
-  enterMemberPortal: (memberIdentifier?: string) => void;
+  enterMemberPortal: (memberIdentifier?: string) => Promise<void>;
   resetToFreshCommitteeLedger: () => void;
   logout: () => Promise<void>;
   refreshServerHealth: () => Promise<void>;
@@ -185,10 +200,246 @@ interface PersistedLocalCommitteeState {
   settings: CommitteeSettings;
 }
 
+function toMemberPortalUser(member: Member): AppUser {
+  return {
+    id: `member-portal-${member.id}`,
+    uid: `member-portal-${member.id}`,
+    name: member.fullName,
+    email: '',
+    phone: member.mobile,
+    role: 'MEMBER',
+    memberId: member.id,
+    status: member.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
+    canAddMembers: false,
+    canReversePayments: false,
+    canManageExpenses: false,
+    canSendBulkWhatsApp: false,
+    createdAt: member.createdAt,
+    updatedAt: member.updatedAt,
+  };
+}
+
+let firestoreSeedPromise: Promise<void> | null = null;
+
+async function commitBatchedWrites(
+  ops: Array<(batch: ReturnType<typeof writeBatch>) => void>,
+  chunkSize = 200
+): Promise<void> {
+  for (let i = 0; i < ops.length; i += chunkSize) {
+    const batch = writeBatch(db);
+    const slice = ops.slice(i, i + chunkSize);
+    for (const apply of slice) {
+      apply(batch);
+    }
+    await batch.commit();
+  }
+}
+
+async function ensureFirestoreSeeded(
+  actorUid: string,
+  seedDataset: PersistedLocalCommitteeState
+): Promise<void> {
+  if (firestoreSeedPromise) return firestoreSeedPromise;
+  firestoreSeedPromise = (async () => {
+    try {
+      const [settingsSnap, membersSnap] = await Promise.all([
+        getDocFromServer(doc(db, 'settings', 'committee')).catch(() => null),
+        getDocs(query(collection(db, 'members'), limit(1))),
+      ]);
+      if ((settingsSnap && settingsSnap.exists()) || !membersSnap.empty) {
+        return; // Cloud Firestore already contains live committee data
+      }
+
+      // Phase 1: Settings + CollectionMonths + Announcements + Expenses + Notifications + AuditLogs + Members
+      const phase1Ops: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
+
+      const { id: _sid, ...settingsPayload } = seedDataset.settings;
+      phase1Ops.push((batch) => {
+        batch.set(
+          doc(db, 'settings', 'committee'),
+          stripUndefined({
+            ...settingsPayload,
+            updatedBy: actorUid,
+            updatedAt: serverTimestamp(),
+          })
+        );
+      });
+
+      for (const cm of seedDataset.collectionMonths) {
+        const { id: _id, ...cmPayload } = cm;
+        phase1Ops.push((batch) => {
+          batch.set(
+            doc(db, 'collectionMonths', cm.id || cm.monthKey),
+            stripUndefined({
+              ...cmPayload,
+              createdBy: cm.createdBy || actorUid,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            })
+          );
+        });
+      }
+
+      for (const ann of seedDataset.announcements) {
+        const { id: _id, ...annPayload } = ann;
+        phase1Ops.push((batch) => {
+          batch.set(
+            doc(db, 'announcements', ann.id),
+            stripUndefined({
+              ...annPayload,
+              createdBy: ann.createdBy || actorUid,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            })
+          );
+        });
+      }
+
+      for (const exp of seedDataset.expenses) {
+        const { id: _id, attachmentDataUrl: _att, ...expPayload } = exp;
+        phase1Ops.push((batch) => {
+          batch.set(
+            doc(db, 'expenses', exp.id),
+            stripUndefined({
+              ...expPayload,
+              createdBy: exp.createdBy || actorUid,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            })
+          );
+        });
+      }
+
+      for (const wn of seedDataset.whatsappNotifications) {
+        const { id: _id, ...wnPayload } = wn;
+        phase1Ops.push((batch) => {
+          batch.set(
+            doc(db, 'whatsappNotifications', wn.id),
+            stripUndefined({
+              ...wnPayload,
+              sentByUid: wn.sentByUid || actorUid,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            })
+          );
+        });
+      }
+
+      for (const log of seedDataset.auditLogs) {
+        const { id: _id, ...logPayload } = log;
+        phase1Ops.push((batch) => {
+          batch.set(
+            doc(db, 'auditLogs', log.id),
+            stripUndefined({
+              ...logPayload,
+              userId: log.userId || actorUid,
+              createdAt: serverTimestamp(),
+            })
+          );
+        });
+      }
+
+      for (const m of seedDataset.members) {
+        const { id: _id, ...mPayload } = m;
+        phase1Ops.push((batch) => {
+          batch.set(
+            doc(db, 'members', m.id),
+            stripUndefined({
+              ...mPayload,
+              createdBy: m.createdBy || actorUid,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            })
+          );
+        });
+      }
+
+      await commitBatchedWrites(phase1Ops, 200);
+
+      // Phase 2: MemberLedgers, Payments (created as COMPLETED first), and Receipts
+      const phase2Ops: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
+      const reversedPaymentsToUpdate: Payment[] = [];
+
+      for (const l of seedDataset.ledgers) {
+        const { id: _id, ...lPayload } = l;
+        phase2Ops.push((batch) => {
+          batch.set(
+            doc(db, 'memberLedgers', l.id),
+            stripUndefined({
+              ...lPayload,
+              updatedAt: serverTimestamp(),
+            })
+          );
+        });
+      }
+
+      for (const p of seedDataset.payments) {
+        if (p.status === 'REVERSED') {
+          reversedPaymentsToUpdate.push(p);
+        }
+        const {
+          id: _id,
+          reversalReason: _rr,
+          reversedBy: _rb,
+          ...pPayload
+        } = p;
+        phase2Ops.push((batch) => {
+          batch.set(
+            doc(db, 'payments', p.id),
+            stripUndefined({
+              ...pPayload,
+              status: 'COMPLETED',
+              createdBy: p.createdBy || actorUid,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            })
+          );
+        });
+      }
+
+      for (const r of seedDataset.receipts) {
+        const { id: _id, ...rPayload } = r;
+        phase2Ops.push((batch) => {
+          batch.set(
+            doc(db, 'receipts', r.id),
+            stripUndefined({
+              ...rPayload,
+              createdBy: r.createdBy || actorUid,
+              createdAt: serverTimestamp(),
+            })
+          );
+        });
+      }
+
+      await commitBatchedWrites(phase2Ops, 200);
+
+      // Phase 3: Apply any historical REVERSED payment states safely
+      if (reversedPaymentsToUpdate.length > 0) {
+        const phase3Ops: Array<(batch: ReturnType<typeof writeBatch>) => void> =
+          reversedPaymentsToUpdate.map((p) => (batch) => {
+            batch.update(doc(db, 'payments', p.id), {
+              status: 'REVERSED',
+              reversalReason: p.reversalReason || 'Reversed',
+              reversedBy: actorUid,
+              updatedAt: serverTimestamp(),
+            });
+          });
+        await commitBatchedWrites(phase3Ops, 200);
+      }
+    } catch (err) {
+      console.warn('Firestore initial seed deferred (offline or busy):', err);
+    } finally {
+      firestoreSeedPromise = null;
+    }
+  })();
+  return firestoreSeedPromise;
+}
+
 export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [mode, setMode] = useState<'NONE' | 'MEMBER_PORTAL' | 'LOCAL_ADMIN' | 'FIREBASE'>('NONE');
   const [authReady, setAuthReady] = useState(false);
   const [firebaseConnected, setFirebaseConnected] = useState(false);
+  const [liveSyncStatus, setLiveSyncStatus] = useState<'SYNCED' | 'CONNECTING' | 'OFFLINE'>('CONNECTING');
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
 
@@ -210,6 +461,15 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [settings, setSettings] = useState<CommitteeSettings>(DEFAULT_COMMITTEE_DATA.settings);
+  const [memberPublicSummary, setMemberPublicSummary] = useState<LiveCommitteeSummary>({
+    activeMembersCount: 0,
+    monthExpectedPaise: 0,
+    monthCollectedPaise: 0,
+    totalCollectedAllMonthsPaise: 0,
+    totalExpensesPaise: 0,
+    availableBalancePaise: 0,
+    lastSyncedAt: '',
+  });
   const [serverWhatsappHealth, setServerWhatsappHealth] = useState<ServerWhatsappHealth>({
     tokenConfigured: false,
     phoneNumberIdConfigured: false,
@@ -232,7 +492,31 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
     refreshServerHealth();
-    testFirestoreConnection().then(setFirebaseConnected);
+    testFirestoreConnection().then((ok) => {
+      setFirebaseConnected(ok);
+      setLiveSyncStatus(ok ? 'SYNCED' : 'OFFLINE');
+    });
+    // Pre-subscribe to live committee settings so LoginPage also reflects live committee name/theme
+    const unsubSettings = onSnapshot(
+      doc(db, 'settings', 'committee'),
+      (snap) => {
+        setFirebaseConnected(true);
+        setLiveSyncStatus('SYNCED');
+        if (snap.exists()) {
+          const d = snap.data();
+          setSettings({
+            ...(DEFAULT_COMMITTEE_DATA.settings as CommitteeSettings),
+            ...d,
+            id: snap.id,
+            updatedAt: d.updatedAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
+          } as CommitteeSettings);
+        }
+      },
+      () => {
+        // Ignore transient offline errors on boot
+      }
+    );
+    return () => unsubSettings();
   }, [refreshServerHealth]);
 
   const setLanguage = useCallback((lang: Language) => {
@@ -249,7 +533,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [settings.theme]);
 
-  // Restore persisted Committee Admin or Member Portal session if present and not signed into Firebase
+  // Restore persisted Committee Admin or Member Portal session and immediately attach live Cloud Firestore sync
   useEffect(() => {
     try {
       const rawAdminSession = localStorage.getItem(ADMIN_SESSION_STORAGE_KEY);
@@ -259,7 +543,8 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const dataset = rawState
           ? (JSON.parse(rawState) as PersistedLocalCommitteeState)
           : buildCommitteeDataset();
-        setUsers(dataset.users);
+        // Warm optimistic state while Cloud Firestore onSnapshot connects
+        setUsers(dataset.users.some((u) => u.uid === savedUser.uid) ? dataset.users : [savedUser, ...dataset.users]);
         setMembers(dataset.members);
         setCollectionMonths(dataset.collectionMonths);
         setLedgers(dataset.ledgers);
@@ -271,13 +556,45 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setAuditLogs(dataset.auditLogs);
         setSettings(dataset.settings);
         setCurrentUser(savedUser);
-        setMode('LOCAL_ADMIN');
+        setMode('FIREBASE');
+        void ensureFirestoreSeeded(savedUser.uid, dataset);
         return;
       }
 
       const rawMemberSession = localStorage.getItem(MEMBER_SESSION_STORAGE_KEY);
       if (rawMemberSession) {
-        const savedMemberId = String(rawMemberSession);
+        let savedMemberId = String(rawMemberSession);
+        let parsedUser: AppUser | null = null;
+        if (rawMemberSession.startsWith('{')) {
+          try {
+            const parsed = JSON.parse(rawMemberSession) as {
+              memberId: string;
+              memberCode?: string;
+              fullName?: string;
+              mobile?: string;
+            };
+            savedMemberId = parsed.memberId;
+            parsedUser = {
+              id: `member-portal-${parsed.memberId}`,
+              uid: `member-portal-${parsed.memberId}`,
+              name: parsed.fullName || parsed.memberCode || 'Member',
+              email: '',
+              phone: parsed.mobile || '',
+              role: 'MEMBER',
+              memberId: parsed.memberId,
+              status: 'ACTIVE',
+              canAddMembers: false,
+              canReversePayments: false,
+              canManageExpenses: false,
+              canSendBulkWhatsApp: false,
+              createdAt: '',
+              updatedAt: '',
+            };
+          } catch {
+            // fallback to plain ID
+          }
+        }
+
         const rawState = localStorage.getItem(ADMIN_STATE_STORAGE_KEY);
         const dataset = rawState
           ? (JSON.parse(rawState) as PersistedLocalCommitteeState)
@@ -295,23 +612,18 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setAnnouncements(dataset.announcements.filter((a) => a.status === 'PUBLISHED'));
           setAuditLogs([]);
           setSettings(dataset.settings);
-          setCurrentUser({
-            id: `member-portal-${target.id}`,
-            uid: `member-portal-${target.id}`,
-            name: target.fullName,
-            email: '',
-            phone: target.mobile,
-            role: 'MEMBER',
-            memberId: target.id,
-            status: target.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
-            canAddMembers: false,
-            canReversePayments: false,
-            canManageExpenses: false,
-            canSendBulkWhatsApp: false,
-            createdAt: target.createdAt,
-            updatedAt: target.updatedAt,
-          });
+          setCurrentUser(toMemberPortalUser(target));
           setSelectedMemberId(target.id);
+          setActivePage('member-details');
+          setMode('MEMBER_PORTAL');
+        } else if (parsedUser) {
+          setUsers([]);
+          setMembers([]);
+          setExpenses([]);
+          setWhatsappNotifications([]);
+          setAuditLogs([]);
+          setCurrentUser(parsedUser);
+          setSelectedMemberId(savedMemberId);
           setActivePage('member-details');
           setMode('MEMBER_PORTAL');
         }
@@ -321,9 +633,14 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, []);
 
-  // Persist Committee Admin local workspace automatically
+  // Cache live Committee Admin workspace locally for offline resilience
   useEffect(() => {
-    if (mode !== 'LOCAL_ADMIN' || !currentUser) return;
+    const isAdminSession =
+      currentUser &&
+      (currentUser.role === 'SUPER_ADMIN' || currentUser.role === 'COLLECTION_ADMIN') &&
+      (mode === 'LOCAL_ADMIN' || mode === 'FIREBASE');
+    if (!isAdminSession) return;
+    if (members.length === 0 && collectionMonths.length === 0) return;
     try {
       const snapshot: PersistedLocalCommitteeState = {
         users,
@@ -365,7 +682,8 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!fbUser) {
         setAuthReady(true);
         setMode((prev) => {
-          if (prev === 'FIREBASE') {
+          const hasStoredAdmin = Boolean(localStorage.getItem(ADMIN_SESSION_STORAGE_KEY));
+          if (prev === 'FIREBASE' && !hasStoredAdmin) {
             setCurrentUser(null);
             return 'NONE';
           }
@@ -450,19 +768,25 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => unsub();
   }, []);
 
-  // Attach Firestore real-time listeners strictly when authReady && mode === 'FIREBASE' && currentUser
+  // Attach live Cloud Firestore real-time listeners for BOTH Admin (FIREBASE) and Member Portal (MEMBER_PORTAL)
   useEffect(() => {
-    if (!authReady || mode !== 'FIREBASE' || !currentUser || !firebaseUser) return;
+    if (!authReady || !currentUser || (mode !== 'FIREBASE' && mode !== 'MEMBER_PORTAL')) return;
 
+    setLiveSyncStatus('CONNECTING');
     const unsubs: Array<() => void> = [];
-    const isAdmin = currentUser.role === 'SUPER_ADMIN' || currentUser.role === 'COLLECTION_ADMIN';
-    const isSuper = currentUser.role === 'SUPER_ADMIN';
+    const isAdmin =
+      mode === 'FIREBASE' &&
+      (currentUser.role === 'SUPER_ADMIN' || currentUser.role === 'COLLECTION_ADMIN');
+    const isSuper = mode === 'FIREBASE' && currentUser.role === 'SUPER_ADMIN';
+    const targetMemberId = currentUser.memberId || selectedMemberId;
 
     // 1. Settings
     unsubs.push(
       onSnapshot(
         doc(db, 'settings', 'committee'),
         (snap) => {
+          setFirebaseConnected(true);
+          setLiveSyncStatus('SYNCED');
           if (snap.exists()) {
             const d = snap.data();
             setSettings({
@@ -482,6 +806,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       onSnapshot(
         query(collection(db, 'collectionMonths'), where('status', 'in', ['OPEN', 'CLOSED'])),
         (snap) => {
+          setLiveSyncStatus('SYNCED');
           setCollectionMonths(
             snap.docs.map((d) => ({
               ...(d.data() as CollectionMonth),
@@ -500,6 +825,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       onSnapshot(
         query(collection(db, 'announcements'), where('status', '==', 'PUBLISHED')),
         (snap) => {
+          setLiveSyncStatus('SYNCED');
           setAnnouncements(
             snap.docs.map((d) => ({
               ...(d.data() as Announcement),
@@ -514,89 +840,77 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
 
     // 4. Members, Payments, Ledgers, Receipts
-    const memberQ = isAdmin
-      ? collection(db, 'members')
-      : query(collection(db, 'members'), where('userUid', '==', currentUser.uid));
-
-    unsubs.push(
-      onSnapshot(
-        memberQ,
-        (snap) => {
-          setMembers(
-            snap.docs.map((d) => ({
-              ...(d.data() as Member),
-              id: d.id,
-              createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
-              updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
-            }))
-          );
-        },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'members')
-      )
-    );
-
-    const paymentQ = isAdmin
-      ? collection(db, 'payments')
-      : query(collection(db, 'payments'), where('memberUserUid', '==', currentUser.uid));
-
-    unsubs.push(
-      onSnapshot(
-        paymentQ,
-        (snap) => {
-          setPayments(
-            snap.docs.map((d) => ({
-              ...(d.data() as Payment),
-              id: d.id,
-              createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
-              updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
-            }))
-          );
-        },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'payments')
-      )
-    );
-
-    const ledgerQ = isAdmin
-      ? collection(db, 'memberLedgers')
-      : query(collection(db, 'memberLedgers'), where('memberUserUid', '==', currentUser.uid));
-
-    unsubs.push(
-      onSnapshot(
-        ledgerQ,
-        (snap) => {
-          setLedgers(
-            snap.docs.map((d) => ({
-              ...(d.data() as MemberLedger),
-              id: d.id,
-              updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
-            }))
-          );
-        },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'memberLedgers')
-      )
-    );
-
-    const receiptQ = isAdmin
-      ? collection(db, 'receipts')
-      : query(collection(db, 'receipts'), where('memberUserUid', '==', currentUser.uid));
-
-    unsubs.push(
-      onSnapshot(
-        receiptQ,
-        (snap) => {
-          setReceipts(
-            snap.docs.map((d) => ({
-              ...(d.data() as Receipt),
-              id: d.id,
-              createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
-            }))
-          );
-        },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'receipts')
-      )
-    );
-
     if (isAdmin) {
+      unsubs.push(
+        onSnapshot(
+          collection(db, 'members'),
+          (snap) => {
+            setLiveSyncStatus('SYNCED');
+            setMembers(
+              snap.docs.map((d) => ({
+                ...(d.data() as Member),
+                id: d.id,
+                createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+                updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+              }))
+            );
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, 'members')
+        )
+      );
+
+      unsubs.push(
+        onSnapshot(
+          collection(db, 'payments'),
+          (snap) => {
+            setLiveSyncStatus('SYNCED');
+            setPayments(
+              snap.docs.map((d) => ({
+                ...(d.data() as Payment),
+                id: d.id,
+                createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+                updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+              }))
+            );
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, 'payments')
+        )
+      );
+
+      unsubs.push(
+        onSnapshot(
+          collection(db, 'memberLedgers'),
+          (snap) => {
+            setLiveSyncStatus('SYNCED');
+            setLedgers(
+              snap.docs.map((d) => ({
+                ...(d.data() as MemberLedger),
+                id: d.id,
+                updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+              }))
+            );
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, 'memberLedgers')
+        )
+      );
+
+      unsubs.push(
+        onSnapshot(
+          collection(db, 'receipts'),
+          (snap) => {
+            setLiveSyncStatus('SYNCED');
+            setReceipts(
+              snap.docs.map((d) => ({
+                ...(d.data() as Receipt),
+                id: d.id,
+                createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+              }))
+            );
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, 'receipts')
+        )
+      );
+
       unsubs.push(
         onSnapshot(
           collection(db, 'expenses'),
@@ -630,25 +944,197 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           (err) => handleFirestoreError(err, OperationType.LIST, 'whatsappNotifications')
         )
       );
-    }
+    } else {
+      // Member Portal: keep PII strictly scoped to logged-in member's own records
+      if (targetMemberId) {
+        unsubs.push(
+          onSnapshot(
+            doc(db, 'members', targetMemberId),
+            (snap) => {
+              setLiveSyncStatus('SYNCED');
+              if (snap.exists()) {
+                const mem = {
+                  ...(snap.data() as Member),
+                  id: snap.id,
+                  createdAt: snap.data().createdAt?.toDate?.()?.toISOString?.() || '',
+                  updatedAt: snap.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+                };
+                setMembers([mem]);
+              }
+            },
+            (err) => handleFirestoreError(err, OperationType.GET, `members/${targetMemberId}`)
+          )
+        );
+      }
 
-    if (isSuper) {
+      const paymentQ = targetMemberId
+        ? query(collection(db, 'payments'), where('memberId', '==', targetMemberId))
+        : query(collection(db, 'payments'), where('memberUserUid', '==', currentUser.uid));
       unsubs.push(
         onSnapshot(
-          collection(db, 'users'),
+          paymentQ,
           (snap) => {
-            setUsers(
+            setLiveSyncStatus('SYNCED');
+            setPayments(
               snap.docs.map((d) => ({
-                ...(d.data() as AppUser),
+                ...(d.data() as Payment),
                 id: d.id,
                 createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
                 updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
               }))
             );
           },
-          (err) => handleFirestoreError(err, OperationType.LIST, 'users')
+          (err) => handleFirestoreError(err, OperationType.LIST, 'payments')
         )
       );
+
+      const ledgerQ = targetMemberId
+        ? query(collection(db, 'memberLedgers'), where('memberId', '==', targetMemberId))
+        : query(collection(db, 'memberLedgers'), where('memberUserUid', '==', currentUser.uid));
+      unsubs.push(
+        onSnapshot(
+          ledgerQ,
+          (snap) => {
+            setLiveSyncStatus('SYNCED');
+            setLedgers(
+              snap.docs.map((d) => ({
+                ...(d.data() as MemberLedger),
+                id: d.id,
+                updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+              }))
+            );
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, 'memberLedgers')
+        )
+      );
+
+      const receiptQ = targetMemberId
+        ? query(collection(db, 'receipts'), where('memberId', '==', targetMemberId))
+        : query(collection(db, 'receipts'), where('memberUserUid', '==', currentUser.uid));
+      unsubs.push(
+        onSnapshot(
+          receiptQ,
+          (snap) => {
+            setLiveSyncStatus('SYNCED');
+            setReceipts(
+              snap.docs.map((d) => ({
+                ...(d.data() as Receipt),
+                id: d.id,
+                createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+              }))
+            );
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, 'receipts')
+        )
+      );
+
+      // Non-PII Live Committee Totals so Members see live fund totals without viewing other members' PII
+      let latestActiveMembers = 0;
+      let latestMonthExpected = 0;
+      let latestMonthCollected = 0;
+      let latestAllCollected = 0;
+      let latestTotalExpenses = 0;
+
+      const recomputePublicSummary = () => {
+        setMemberPublicSummary({
+          activeMembersCount: latestActiveMembers,
+          monthExpectedPaise: latestMonthExpected,
+          monthCollectedPaise: latestMonthCollected,
+          totalCollectedAllMonthsPaise: latestAllCollected,
+          totalExpensesPaise: latestTotalExpenses,
+          availableBalancePaise: latestAllCollected - latestTotalExpenses,
+          lastSyncedAt: new Date().toISOString(),
+        });
+      };
+
+      unsubs.push(
+        onSnapshot(
+          collection(db, 'members'),
+          (snap) => {
+            latestActiveMembers = snap.docs.filter(
+              (d) => d.data().status === 'ACTIVE'
+            ).length;
+            recomputePublicSummary();
+          },
+          () => {}
+        )
+      );
+
+      unsubs.push(
+        onSnapshot(
+          query(collection(db, 'memberLedgers'), where('monthKey', '==', selectedMonthKey)),
+          (snap) => {
+            let exp = 0;
+            let col = 0;
+            snap.docs.forEach((d) => {
+              const data = d.data();
+              exp += Number(data.duePaise || 0);
+              col += Number(data.paidPaise || 0);
+            });
+            latestMonthExpected = exp;
+            latestMonthCollected = col;
+            recomputePublicSummary();
+          },
+          () => {}
+        )
+      );
+
+      unsubs.push(
+        onSnapshot(
+          collection(db, 'payments'),
+          (snap) => {
+            let sum = 0;
+            snap.docs.forEach((d) => {
+              const data = d.data();
+              if (data.status === 'COMPLETED') {
+                sum += Number(data.amountPaise || 0);
+              }
+            });
+            latestAllCollected = sum;
+            recomputePublicSummary();
+          },
+          () => {}
+        )
+      );
+
+      unsubs.push(
+        onSnapshot(
+          collection(db, 'expenses'),
+          (snap) => {
+            let sum = 0;
+            snap.docs.forEach((d) => {
+              const data = d.data();
+              if (data.status === 'ACTIVE') {
+                sum += Number(data.amountPaise || 0);
+              }
+            });
+            latestTotalExpenses = sum;
+            recomputePublicSummary();
+          },
+          () => {}
+        )
+      );
+    }
+
+    if (isSuper) {
+      if (firebaseUser) {
+        unsubs.push(
+          onSnapshot(
+            collection(db, 'users'),
+            (snap) => {
+              setUsers(
+                snap.docs.map((d) => ({
+                  ...(d.data() as AppUser),
+                  id: d.id,
+                  createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+                  updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+                }))
+              );
+            },
+            (err) => handleFirestoreError(err, OperationType.LIST, 'users')
+          )
+        );
+      }
 
       unsubs.push(
         onSnapshot(
@@ -670,7 +1156,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => {
       unsubs.forEach((u) => u());
     };
-  }, [authReady, mode, currentUser, firebaseUser]);
+  }, [authReady, mode, currentUser, firebaseUser, selectedMemberId, selectedMonthKey]);
 
   const loginWithGoogle = useCallback(async () => {
     localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
@@ -783,20 +1269,74 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     localStorage.setItem(ADMIN_SESSION_STORAGE_KEY, JSON.stringify(adminUser));
     setCurrentUser(adminUser);
-    setMode('LOCAL_ADMIN');
+    setMode('FIREBASE');
     setActivePage('dashboard');
+    void ensureFirestoreSeeded(adminUser.uid, dataset);
   }, []);
 
-  const enterMemberPortal = useCallback((memberIdentifier?: string) => {
+  const enterMemberPortal = useCallback(async (memberIdentifier?: string) => {
     localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
-    let dataset: PersistedLocalCommitteeState;
+
+    // Fetch live members, months, announcements & settings directly from Cloud Firestore when online
+    let sourceMembers: Member[] = [];
+    let sourceMonths: CollectionMonth[] = [];
+    let sourceLedgers: MemberLedger[] = [];
+    let sourcePayments: Payment[] = [];
+    let sourceReceipts: Receipt[] = [];
+    let sourceAnnouncements: Announcement[] = [];
+    let sourceSettings: CommitteeSettings | null = null;
+    let fetchedFromCloud = false;
+
     try {
-      const rawState = localStorage.getItem(ADMIN_STATE_STORAGE_KEY);
-      dataset = rawState
-        ? (JSON.parse(rawState) as PersistedLocalCommitteeState)
-        : buildCommitteeDataset();
+      const [mSnap, cmSnap, sSnap] = await Promise.all([
+        getDocs(collection(db, 'members')),
+        getDocs(query(collection(db, 'collectionMonths'), where('status', 'in', ['OPEN', 'CLOSED']))),
+        getDoc(doc(db, 'settings', 'committee')),
+      ]);
+
+      sourceMembers = mSnap.docs.map((d) => ({
+        ...(d.data() as Member),
+        id: d.id,
+        createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+        updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+      }));
+      sourceMonths = cmSnap.docs.map((d) => ({
+        ...(d.data() as CollectionMonth),
+        id: d.id,
+        createdAt: d.data().createdAt?.toDate?.()?.toISOString?.() || '',
+        updatedAt: d.data().updatedAt?.toDate?.()?.toISOString?.() || '',
+      }));
+      if (sSnap.exists()) {
+        const d = sSnap.data();
+        sourceSettings = {
+          ...(DEFAULT_COMMITTEE_DATA.settings as CommitteeSettings),
+          ...d,
+          id: sSnap.id,
+          updatedAt: d.updatedAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
+        } as CommitteeSettings;
+      }
+      fetchedFromCloud = sourceMembers.length > 0;
     } catch {
-      dataset = buildCommitteeDataset();
+      fetchedFromCloud = false;
+    }
+
+    let fallbackDataset: PersistedLocalCommitteeState | null = null;
+    if (!fetchedFromCloud) {
+      try {
+        const rawState = localStorage.getItem(ADMIN_STATE_STORAGE_KEY);
+        fallbackDataset = rawState
+          ? (JSON.parse(rawState) as PersistedLocalCommitteeState)
+          : buildCommitteeDataset();
+      } catch {
+        fallbackDataset = buildCommitteeDataset();
+      }
+      sourceMembers = fallbackDataset.members;
+      sourceMonths = fallbackDataset.collectionMonths;
+      sourceLedgers = fallbackDataset.ledgers;
+      sourcePayments = fallbackDataset.payments;
+      sourceReceipts = fallbackDataset.receipts;
+      sourceAnnouncements = fallbackDataset.announcements;
+      sourceSettings = fallbackDataset.settings;
     }
 
     const queryText = (memberIdentifier || '').trim();
@@ -804,7 +1344,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     let targetMember: Member | undefined;
     if (queryText) {
-      targetMember = dataset.members.find(
+      targetMember = sourceMembers.find(
         (m) =>
           m.memberCode.toLowerCase() === queryText.toLowerCase() ||
           (digitsOnly.length >= 10 &&
@@ -818,7 +1358,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     } else {
       targetMember =
-        dataset.members.find((m) => m.status === 'ACTIVE') || dataset.members[0];
+        sourceMembers.find((m) => m.status === 'ACTIVE') || sourceMembers[0];
       if (!targetMember) {
         throw new Error(
           'No registered members exist yet. Please ask the committee admin to add members first.'
@@ -829,34 +1369,27 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Scope context strictly to the logged-in member's own records & public notices
     setUsers([]);
     setMembers([targetMember]);
-    setCollectionMonths(dataset.collectionMonths);
-    setLedgers(dataset.ledgers.filter((l) => l.memberId === targetMember.id));
-    setPayments(dataset.payments.filter((p) => p.memberId === targetMember.id));
-    setReceipts(dataset.receipts.filter((r) => r.memberId === targetMember.id));
+    setCollectionMonths(sourceMonths);
+    setLedgers(sourceLedgers.filter((l) => l.memberId === targetMember.id));
+    setPayments(sourcePayments.filter((p) => p.memberId === targetMember.id));
+    setReceipts(sourceReceipts.filter((r) => r.memberId === targetMember.id));
     setExpenses([]);
     setWhatsappNotifications([]);
-    setAnnouncements(dataset.announcements.filter((a) => a.status === 'PUBLISHED'));
+    setAnnouncements(sourceAnnouncements.filter((a) => a.status === 'PUBLISHED'));
     setAuditLogs([]);
-    setSettings(dataset.settings);
+    if (sourceSettings) setSettings(sourceSettings);
 
-    const memberUser: AppUser = {
-      id: `member-portal-${targetMember.id}`,
-      uid: `member-portal-${targetMember.id}`,
-      name: targetMember.fullName,
-      email: '',
-      phone: targetMember.mobile,
-      role: 'MEMBER',
-      memberId: targetMember.id,
-      status: targetMember.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
-      canAddMembers: false,
-      canReversePayments: false,
-      canManageExpenses: false,
-      canSendBulkWhatsApp: false,
-      createdAt: targetMember.createdAt,
-      updatedAt: targetMember.updatedAt,
-    };
+    const memberUser = toMemberPortalUser(targetMember);
 
-    localStorage.setItem(MEMBER_SESSION_STORAGE_KEY, targetMember.id);
+    localStorage.setItem(
+      MEMBER_SESSION_STORAGE_KEY,
+      JSON.stringify({
+        memberId: targetMember.id,
+        memberCode: targetMember.memberCode,
+        fullName: targetMember.fullName,
+        mobile: targetMember.mobile,
+      })
+    );
     setCurrentUser(memberUser);
     setSelectedMemberId(targetMember.id);
     setMode('MEMBER_PORTAL');
@@ -896,14 +1429,14 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const logout = useCallback(async () => {
     localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
     localStorage.removeItem(MEMBER_SESSION_STORAGE_KEY);
-    if (mode === 'FIREBASE') {
+    if (firebaseUser) {
       await signOut(auth);
     }
     setMode('NONE');
     setCurrentUser(null);
     setSelectedMemberId(null);
     setActivePage('dashboard');
-  }, [mode]);
+  }, [firebaseUser]);
 
   const appendAuditLog = useCallback(
     async (action: string, entityType: string, recordId: string, previousValue: string, newValue: string) => {
@@ -1568,6 +2101,20 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       try {
         await runTransaction(db, async (tx) => {
+          // Execute ALL reads before ANY writes (Firestore SDK requirement)
+          const ledgerEntries: Array<{ lRef: ReturnType<typeof doc>; nextPaid: number; due: number }> = [];
+          for (const allocItem of payment.allocations) {
+            const lid = `${payment.memberId}_${allocItem.monthKey}`;
+            const lRef = doc(db, 'memberLedgers', lid);
+            const lSnap = await tx.get(lRef);
+            if (lSnap.exists()) {
+              const d = lSnap.data();
+              const nextPaid = Math.max(0, Number(d.paidPaise || 0) - allocItem.allocatedPaise);
+              const due = Number(d.duePaise || 0);
+              ledgerEntries.push({ lRef, nextPaid, due });
+            }
+          }
+
           tx.update(doc(db, 'payments', paymentId), {
             status: 'REVERSED',
             reversalReason: reason,
@@ -1583,20 +2130,12 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               updatedAt: serverTimestamp(),
             });
           }
-          for (const allocItem of payment.allocations) {
-            const lid = `${payment.memberId}_${allocItem.monthKey}`;
-            const lRef = doc(db, 'memberLedgers', lid);
-            const lSnap = await tx.get(lRef);
-            if (lSnap.exists()) {
-              const d = lSnap.data();
-              const nextPaid = Math.max(0, Number(d.paidPaise || 0) - allocItem.allocatedPaise);
-              const due = Number(d.duePaise || 0);
-              tx.update(lRef, {
-                paidPaise: nextPaid,
-                status: deriveLedgerStatus(due, nextPaid),
-                updatedAt: serverTimestamp(),
-              });
-            }
+          for (const entry of ledgerEntries) {
+            tx.update(entry.lRef, {
+              paidPaise: entry.nextPaid,
+              status: deriveLedgerStatus(entry.due, entry.nextPaid),
+              updatedAt: serverTimestamp(),
+            });
           }
         });
         await appendAuditLog(
@@ -1845,6 +2384,16 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           };
           if (mode === 'LOCAL_ADMIN') {
             setWhatsappNotifications((prev) => [notif, ...prev]);
+          } else {
+            const { id: _nid, ...nPayload } = notif;
+            await setDoc(
+              doc(db, 'whatsappNotifications', nid),
+              stripUndefined({
+                ...nPayload,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              })
+            );
           }
           await dispatchWhatsappToServer(notif, [
             m.fullName,
@@ -1878,7 +2427,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updatedAt: now,
       };
 
-      if (mode === 'LOCAL_ADMIN') {
+      if (mode === 'LOCAL_ADMIN' || !firebaseUser) {
         setUsers((prev) => {
           const exists = prev.some((u) => u.uid === uid);
           return exists ? prev.map((u) => (u.uid === uid ? userObj : u)) : [...prev, userObj];
@@ -1911,7 +2460,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         handleFirestoreError(err, OperationType.WRITE, `users/${uid}`);
       }
     },
-    [currentUser, mode, appendAuditLog]
+    [currentUser, mode, firebaseUser, appendAuditLog]
   );
 
   const toggleAdminStatus: MaaContextValue['toggleAdminStatus'] = useCallback(
@@ -1919,7 +2468,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const target = users.find((u) => u.id === userId);
       if (!target) return;
       const nextStatus = target.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
-      if (mode === 'LOCAL_ADMIN') {
+      if (mode === 'LOCAL_ADMIN' || !firebaseUser) {
         setUsers((prev) =>
           prev.map((u) => (u.id === userId ? { ...u, status: nextStatus } : u))
         );
@@ -1942,7 +2491,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         handleFirestoreError(err, OperationType.UPDATE, `users/${userId}`);
       }
     },
-    [users, mode, appendAuditLog]
+    [users, mode, firebaseUser, appendAuditLog]
   );
 
   const updateSettings: MaaContextValue['updateSettings'] = useCallback(
@@ -2037,11 +2586,37 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, []);
 
+  const adminDerivedSummary = useMemo<LiveCommitteeSummary>(() => {
+    const activeMembersCount = members.filter((m) => m.status === 'ACTIVE').length;
+    const monthLedgers = ledgers.filter((l) => l.monthKey === selectedMonthKey);
+    const monthExpectedPaise = monthLedgers.reduce((s, l) => s + l.duePaise, 0);
+    const monthCollectedPaise = monthLedgers.reduce((s, l) => s + l.paidPaise, 0);
+    const totalCollectedAllMonthsPaise = payments
+      .filter((p) => p.status === 'COMPLETED')
+      .reduce((s, p) => s + p.amountPaise, 0);
+    const totalExpensesPaise = expenses
+      .filter((e) => e.status === 'ACTIVE')
+      .reduce((s, e) => s + e.amountPaise, 0);
+    return {
+      activeMembersCount,
+      monthExpectedPaise,
+      monthCollectedPaise,
+      totalCollectedAllMonthsPaise,
+      totalExpensesPaise,
+      availableBalancePaise: totalCollectedAllMonthsPaise - totalExpensesPaise,
+      lastSyncedAt: new Date().toISOString(),
+    };
+  }, [members, ledgers, payments, expenses, selectedMonthKey]);
+
+  const liveCommitteeSummary =
+    mode === 'MEMBER_PORTAL' ? memberPublicSummary : adminDerivedSummary;
+
   const value = useMemo<MaaContextValue>(
     () => ({
       mode,
       authReady,
       firebaseConnected,
+      liveSyncStatus,
       currentUser,
       language,
       setLanguage,
@@ -2064,6 +2639,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       announcements,
       auditLogs,
       settings,
+      liveCommitteeSummary,
       serverWhatsappHealth,
       loginWithGoogle,
       loginWithAdminCredentials,
@@ -2094,6 +2670,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       mode,
       authReady,
       firebaseConnected,
+      liveSyncStatus,
       currentUser,
       language,
       setLanguage,
@@ -2112,6 +2689,7 @@ export const MaaProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       announcements,
       auditLogs,
       settings,
+      liveCommitteeSummary,
       serverWhatsappHealth,
       loginWithGoogle,
       loginWithAdminCredentials,

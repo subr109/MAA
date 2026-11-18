@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -661,6 +661,25 @@ export const SettingsPage: React.FC = () => {
   const [theme, setTheme] = useState<'light' | 'dark'>(settings.theme || 'light');
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
   const restoreRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    setCommitteeName(settings.committeeName);
+    setCommitteeAddress(settings.committeeAddress || '');
+    setContactNumber(settings.contactNumber || '');
+    setEmail(settings.email || '');
+    setPujaYear(settings.pujaYear || '');
+    setDefaultChandaRupees(String(paiseToRupees(settings.defaultMonthlyChandaPaise)));
+    setFinancialYear(settings.financialYear);
+    setDueDay(String(settings.dueDay || 10));
+    setWhatsappEnabled(settings.whatsappEnabled);
+    setWhatsappPhoneNumberId(settings.whatsappPhoneNumberId || '');
+    setWhatsappBusinessAccountId(settings.whatsappBusinessAccountId || '');
+    setWhatsappApiVersion(settings.whatsappApiVersion || 'v21.0');
+    setWhatsappReceiptTemplate(settings.whatsappReceiptTemplate || 'maa_chanda_receipt_bn');
+    setWhatsappReminderTemplate(settings.whatsappReminderTemplate || 'maa_chanda_reminder_bn');
+    setWhatsappDefaultLanguage(settings.whatsappDefaultLanguage || 'bn');
+    setTheme(settings.theme || 'light');
+  }, [settings]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();

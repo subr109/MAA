@@ -78,6 +78,8 @@ const NAV_ITEMS: NavItem[] = [
 export const AppShell: React.FC = () => {
   const {
     mode,
+    firebaseConnected,
+    liveSyncStatus,
     currentUser,
     language,
     setLanguage,
@@ -239,6 +241,30 @@ export const AppShell: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            <div
+              className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium border ${
+                liveSyncStatus === 'SYNCED' && firebaseConnected
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300'
+                  : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300'
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  liveSyncStatus === 'SYNCED' && firebaseConnected
+                    ? 'bg-emerald-500 animate-pulse'
+                    : 'bg-amber-500'
+                }`}
+              />
+              <span>
+                {liveSyncStatus === 'SYNCED' && firebaseConnected
+                  ? language === 'bn'
+                    ? 'লাইভ অনলাইন'
+                    : 'Live Online'
+                  : language === 'bn'
+                    ? 'সংযোগ হচ্ছে...'
+                    : 'Syncing...'}
+              </span>
+            </div>
             <PWAInstallButton variant="header" />
             <button
               type="button"
@@ -260,9 +286,19 @@ export const AppShell: React.FC = () => {
 
         {/* Explicit Session / Portal Mode Banner */}
         {(mode === 'MEMBER_PORTAL' || mode === 'LOCAL_ADMIN') && (
-          <div className="no-print bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-900 px-4 sm:px-6 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-900 dark:text-amber-200">
+          <div
+            className={`no-print border-b px-4 sm:px-6 py-2 flex flex-wrap items-center justify-between gap-2 text-xs ${
+              mode === 'MEMBER_PORTAL'
+                ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-900 text-emerald-900 dark:text-emerald-200'
+                : 'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-900 text-amber-900 dark:text-amber-200'
+            }`}
+          >
             <div className="flex items-center gap-2">
-              <AlertTriangle className="w-3.5 h-3.5 text-[#D95D16] shrink-0" />
+              {mode === 'MEMBER_PORTAL' ? (
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+              ) : (
+                <AlertTriangle className="w-3.5 h-3.5 text-[#D95D16] shrink-0" />
+              )}
               <span className="font-medium">
                 {mode === 'LOCAL_ADMIN'
                   ? t(language, 'localAdminBanner')

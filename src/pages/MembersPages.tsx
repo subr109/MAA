@@ -718,10 +718,12 @@ export const MemberDetailsPage: React.FC<{ onEditMember: (member: Member) => voi
     receipts,
     selectedMemberId,
     setSelectedMemberId,
+    selectedMonthKey,
     setPrefillCollectMemberId,
     setActivePage,
     sendWhatsappReminder,
     currentUser,
+    liveCommitteeSummary,
   } = useMaa();
 
   const [previewReceipt, setPreviewReceipt] = useState<Receipt | null>(null);
@@ -904,6 +906,56 @@ export const MemberDetailsPage: React.FC<{ onEditMember: (member: Member) => voi
           </div>
         </div>
       </div>
+
+      {/* Non-PII Live Committee Totals for Member Portal */}
+      {!isAdmin && (
+        <div className="bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-900/60 rounded-xl p-5 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-2.5">
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+              {language === 'bn'
+                ? 'কমিটির লাইভ তহবিল সারসংক্ষেপ'
+                : 'Live Committee Fund Overview'}
+            </h3>
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              {formatMonthLabel(selectedMonthKey, language)} ·{' '}
+              {language === 'bn' ? 'রিয়েল-টাইম আপডেট' : 'Real-Time Live Sync'}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-sm">
+            <div>
+              <div className="text-xs text-slate-500">{t(language, 'kpiActiveMembers')}</div>
+              <div className="font-mono font-bold text-base mt-1">
+                {liveCommitteeSummary.activeMembersCount}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-500">{t(language, 'kpiMonthlyExpected')}</div>
+              <div className="font-mono font-bold text-base mt-1">
+                {formatINR(liveCommitteeSummary.monthExpectedPaise)}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-500">{t(language, 'kpiThisMonthCollection')}</div>
+              <div className="font-mono font-bold text-base text-emerald-700 dark:text-emerald-400 mt-1">
+                {formatINR(liveCommitteeSummary.monthCollectedPaise)}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-500">{t(language, 'kpiTotalExpenses')}</div>
+              <div className="font-mono font-bold text-base text-amber-700 dark:text-amber-400 mt-1">
+                {formatINR(liveCommitteeSummary.totalExpensesPaise)}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-500">{t(language, 'kpiAvailableBalance')}</div>
+              <div className="font-mono font-bold text-base text-[#0F2143] dark:text-amber-300 mt-1">
+                {formatINR(liveCommitteeSummary.availableBalancePaise)}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Monthly Payment Status Grid */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">

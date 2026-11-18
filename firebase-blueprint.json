@@ -246,6 +246,8 @@
         "defaultMonthlyChandaPaise": { "type": "integer" },
         "financialYear": { "type": "string", "maxLength": 20 },
         "dueDay": { "type": "integer" },
+        "collectionStartDate": { "type": "string", "maxLength": 20 },
+        "collectionEndDate": { "type": "string", "maxLength": 20 },
         "whatsappEnabled": { "type": "boolean" },
         "whatsappPhoneNumberId": { "type": "string", "maxLength": 120 },
         "whatsappBusinessAccountId": { "type": "string", "maxLength": 120 },
