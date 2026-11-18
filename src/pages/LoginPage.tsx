@@ -4,7 +4,6 @@ import {
   EyeOff,
   Globe,
   KeyRound,
-  LogIn,
   ShieldCheck,
   Users,
 } from 'lucide-react';
@@ -19,10 +18,8 @@ export const LoginPage: React.FC = () => {
   const {
     language,
     setLanguage,
-    loginWithGoogle,
     loginWithAdminCredentials,
     enterMemberPortal,
-    firebaseConnected,
     settings,
   } = useMaa();
 
@@ -31,7 +28,6 @@ export const LoginPage: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [memberLookup, setMemberLookup] = useState('');
   const [adminLoading, setAdminLoading] = useState(false);
-  const [googleLoading, setGoogleLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const committeeTitle = settings.committeeName || DEFAULT_COMMITTEE_NAME;
@@ -48,18 +44,6 @@ export const LoginPage: React.FC = () => {
       );
     } finally {
       setAdminLoading(false);
-    }
-  };
-
-  const handleGoogleLogin = async () => {
-    setErrorMsg(null);
-    setGoogleLoading(true);
-    try {
-      await loginWithGoogle();
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Sign-in failed');
-    } finally {
-      setGoogleLoading(false);
     }
   };
 
@@ -129,7 +113,7 @@ export const LoginPage: React.FC = () => {
           <span aria-hidden="true">·</span>
           <span>DD-MM-YYYY · Asia/Kolkata</span>
           <span aria-hidden="true">·</span>
-          <span>Firebase {firebaseConnected ? 'Ready' : 'Configured'}</span>
+          <span>বাংলা &amp; English</span>
         </div>
       </div>
 
@@ -235,32 +219,6 @@ export const LoginPage: React.FC = () => {
                   : 'Sign In as Committee Admin'}
             </button>
           </form>
-
-          {/* Live Firebase Auth Section */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-3">
-            <div>
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                {language === 'bn'
-                  ? 'লাইভ ক্লাউড সিঙ্ক (Google Firebase)'
-                  : 'Live Cloud Sync (Google Firebase)'}
-              </h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                {language === 'bn'
-                  ? 'মাল্টি-ডিভাইস ক্লাউড ফায়ারস্টোর ডাটাবেসের জন্য গুগল অ্যাকাউন্ট দিয়ে সাইন ইন করুন।'
-                  : 'Sign in with Google for multi-device Cloud Firestore sync & RBAC rules.'}
-              </p>
-            </div>
-
-            <button
-              type="button"
-              disabled={googleLoading}
-              onClick={handleGoogleLogin}
-              className="w-full inline-flex items-center justify-center gap-2.5 px-4 py-2.5 rounded-lg bg-[#0F2143] hover:bg-[#162D59] text-white text-sm font-semibold transition-colors disabled:opacity-60 whitespace-nowrap"
-            >
-              <LogIn className="w-4 h-4" />
-              {googleLoading ? t(language, 'loading') : t(language, 'signInGoogle')}
-            </button>
-          </div>
 
           {/* Member Portal Only Section */}
           <form
