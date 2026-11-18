@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">MAA Chanda</string>
+    <string name="title_activity_main">MAA Chanda</string>
+    <string name="package_name">org.mashunda.maa.chanda</string>
+    <string name="custom_url_scheme">org.mashunda.maa.chanda</string>
+</resources>

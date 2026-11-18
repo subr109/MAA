@@ -11,6 +11,7 @@ import { useMaa } from '../context/MaaContext';
 import { t } from '../lib/i18n';
 import { DEFAULT_COMMITTEE_NAME } from '../lib/whatsappTemplates';
 import { MaaLogo } from '../components/MaaLogo';
+import { PWAInstallButton } from '../components/PWAInstallButton';
 import pujaBannerImg from '../assets/images/puja_heritage_banner_1794999344685.jpg';
 import maaEmblemImg from '../assets/images/maa_durga_emblem_1794999344327.jpg';
 
@@ -120,16 +121,19 @@ export const LoginPage: React.FC = () => {
       {/* Right Authentication Panel */}
       <div className="lg:w-1/2 flex items-center justify-center p-6 sm:p-10 lg:p-12 overflow-y-auto">
         <div className="max-w-md w-full space-y-6">
-          <div className="flex items-start gap-3">
-            <MaaLogo size={42} />
-            <div className="min-w-0">
-              <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100 leading-snug">
-                {committeeTitle}
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                {t(language, 'appFullName')}
-              </p>
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-3 min-w-0">
+              <MaaLogo size={42} />
+              <div className="min-w-0">
+                <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100 leading-snug">
+                  {committeeTitle}
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  {t(language, 'appFullName')}
+                </p>
+              </div>
             </div>
+            <PWAInstallButton variant="banner" />
           </div>
 
           {errorMsg && (

@@ -28,6 +28,7 @@ import { useMaa } from '../context/MaaContext';
 import { t } from '../lib/i18n';
 import { Member, PageId } from '../types/maa';
 import { MaaLogo } from './MaaLogo';
+import { PWAInstallButton } from './PWAInstallButton';
 import { DashboardPage } from '../pages/DashboardPage';
 import { AddMemberPage, MemberDetailsPage, MemberListPage } from '../pages/MembersPages';
 import {
@@ -237,7 +238,8 @@ export const AppShell: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
+            <PWAInstallButton variant="header" />
             <button
               type="button"
               onClick={() => setLanguage(language === 'bn' ? 'en' : 'bn')}
@@ -284,7 +286,7 @@ export const AppShell: React.FC = () => {
       </div>
 
       {/* Mobile Bottom Navigation (<= 15% viewport height) */}
-      <nav className="no-print lg:hidden fixed bottom-0 inset-x-0 z-30 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 grid grid-cols-5">
+      <nav className="no-print lg:hidden fixed bottom-0 inset-x-0 z-30 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 grid grid-cols-5 pb-[env(safe-area-inset-bottom)]">
         {mobileQuickNav.map((item) => {
           const Icon = item.icon;
           const active = activePage === item.id;
@@ -349,6 +351,9 @@ export const AppShell: React.FC = () => {
                   </button>
                 );
               })}
+            </div>
+            <div className="p-3 border-t border-white/10">
+              <PWAInstallButton variant="drawer" />
             </div>
           </div>
           <div className="flex-1" onClick={() => setMobileMenuOpen(false)} />

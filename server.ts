@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import dotenv from 'dotenv';
 import express, { Request, Response } from 'express';
 import fs from 'fs';
+import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -173,6 +174,7 @@ function safeCompareStrings(a: string, b: string): boolean {
 
 async function createAppServer() {
   const app = express();
+  const httpServer = http.createServer(app);
 
   // Capture raw body for optional Meta X-Hub-Signature-256 verification
   app.use(
@@ -417,7 +419,10 @@ async function createAppServer() {
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -434,7 +439,7 @@ async function createAppServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`MAA Server listening on http://0.0.0.0:${PORT}`);
   });
 }

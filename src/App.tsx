@@ -3,6 +3,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { MaaProvider, useMaa } from './context/MaaContext';
 import { LoginPage } from './pages/LoginPage';
 import { AppShell } from './components/AppShell';
+import { OfflineIndicator } from './components/OfflineIndicator';
 
 const MaaRoot: React.FC = () => {
   const { mode, currentUser } = useMaa();
@@ -19,6 +20,7 @@ export default function App() {
     <ErrorBoundary>
       <MaaProvider>
         <MaaRoot />
+        <OfflineIndicator />
       </MaaProvider>
     </ErrorBoundary>
   );
