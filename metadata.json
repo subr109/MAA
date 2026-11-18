@@ -1,0 +1,6 @@
+{
+  "name": "MAA — Monthly Association Account",
+  "description": "Puja Monthly Chanda Collection Management System — Every Contribution Matters.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

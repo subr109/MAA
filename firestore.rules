@@ -1,0 +1,497 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Pillar 1 / Global Safety Net: Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================
+    // Global Hardened Primitives
+    // =========================================================
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isBootstrappedSuperAdmin() {
+      return isSignedIn() && request.auth.token.email == 'sroy22000@gmail.com';
+    }
+
+    function isSuperAdmin() {
+      return isBootstrappedSuperAdmin() || (
+        isSignedIn() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.active == true &&
+        get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'SUPER_ADMIN'
+      );
+    }
+
+    function isCollectionAdmin() {
+      return isSuperAdmin() || (
+        isSignedIn() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.active == true &&
+        get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role in ['SUPER_ADMIN', 'COLLECTION_ADMIN']
+      );
+    }
+
+    // =========================================================
+    // Validation Blueprints (Anti-Update-Gap)
+    // =========================================================
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'name', 'email', 'role', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'email', 'phone', 'role', 'memberId', 'status', 'canAddMembers', 'canReversePayments', 'canManageExpenses', 'canSendBulkWhatsApp', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 24))
+        && data.role in ['SUPER_ADMIN', 'COLLECTION_ADMIN', 'MEMBER']
+        && (!('memberId' in data) || (data.memberId is string && data.memberId.size() <= 128))
+        && data.status in ['ACTIVE', 'INACTIVE']
+        && (!('canAddMembers' in data) || data.canAddMembers is bool)
+        && (!('canReversePayments' in data) || data.canReversePayments is bool)
+        && (!('canManageExpenses' in data) || data.canManageExpenses is bool)
+        && (!('canSendBulkWhatsApp' in data) || data.canSendBulkWhatsApp is bool)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAdminRole(data) {
+      return data.keys().hasAll(['uid', 'email', 'role', 'active', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'email', 'role', 'active', 'createdAt'])
+        && isValidId(data.uid)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.role in ['SUPER_ADMIN', 'COLLECTION_ADMIN']
+        && data.active is bool
+        && data.createdAt is timestamp;
+    }
+
+    function isValidMember(data) {
+      return data.keys().hasAll(['memberCode', 'fullName', 'mobile', 'monthlyChandaPaise', 'category', 'status', 'whatsappConsent', 'advanceBalancePaise', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['memberCode', 'fullName', 'mobile', 'whatsappNumber', 'address', 'area', 'joiningDate', 'monthlyChandaPaise', 'category', 'status', 'whatsappConsent', 'notes', 'photoUrl', 'assignedCollectorUid', 'assignedCollectorName', 'advanceBalancePaise', 'userUid', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.memberCode is string && data.memberCode.size() >= 4 && data.memberCode.size() <= 32 && data.memberCode.matches('^MAA-[0-9]{4,}$')
+        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120
+        && data.mobile is string && data.mobile.size() >= 10 && data.mobile.size() <= 20
+        && (!('whatsappNumber' in data) || (data.whatsappNumber is string && data.whatsappNumber.size() <= 20))
+        && (!('address' in data) || (data.address is string && data.address.size() <= 300))
+        && (!('area' in data) || (data.area is string && data.area.size() <= 100))
+        && (!('joiningDate' in data) || (data.joiningDate is string && data.joiningDate.size() <= 20))
+        && data.monthlyChandaPaise is int && data.monthlyChandaPaise >= 0 && data.monthlyChandaPaise <= 100000000
+        && data.category in ['GENERAL', 'PATRON', 'SENIOR', 'YOUTH', 'FAMILY']
+        && data.status in ['ACTIVE', 'INACTIVE', 'ARCHIVED']
+        && data.whatsappConsent is bool
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 500))
+        && (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 2048))
+        && (!('assignedCollectorUid' in data) || (data.assignedCollectorUid is string && data.assignedCollectorUid.size() <= 128))
+        && (!('assignedCollectorName' in data) || (data.assignedCollectorName is string && data.assignedCollectorName.size() <= 120))
+        && data.advanceBalancePaise is int && data.advanceBalancePaise >= 0 && data.advanceBalancePaise <= 1000000000
+        && (!('userUid' in data) || (data.userUid is string && data.userUid.size() <= 128))
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCollectionMonth(data) {
+      return data.keys().hasAll(['monthKey', 'label', 'financialYear', 'defaultAmountPaise', 'status', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['monthKey', 'label', 'financialYear', 'defaultAmountPaise', 'dueDate', 'status', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.monthKey is string && data.monthKey.size() == 7 && data.monthKey.matches('^[0-9]{4}-[0-9]{2}$')
+        && data.label is string && data.label.size() >= 3 && data.label.size() <= 60
+        && data.financialYear is string && data.financialYear.size() >= 4 && data.financialYear.size() <= 20
+        && data.defaultAmountPaise is int && data.defaultAmountPaise >= 0 && data.defaultAmountPaise <= 100000000
+        && (!('dueDate' in data) || (data.dueDate is string && data.dueDate.size() <= 20))
+        && data.status in ['OPEN', 'CLOSED']
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPayment(data) {
+      return data.keys().hasAll(['transactionId', 'receiptNumber', 'memberId', 'memberCode', 'memberName', 'monthKey', 'amountPaise', 'paymentDate', 'paymentMethod', 'collectedByUid', 'collectedByName', 'allocationMode', 'allocations', 'advanceAddedPaise', 'previousDuePaise', 'remainingDuePaise', 'status', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['transactionId', 'receiptNumber', 'memberId', 'memberCode', 'memberName', 'memberUserUid', 'monthKey', 'amountPaise', 'paymentDate', 'paymentMethod', 'transactionRef', 'collectedByUid', 'collectedByName', 'allocationMode', 'allocations', 'advanceAddedPaise', 'previousDuePaise', 'remainingDuePaise', 'status', 'reversalReason', 'reversedBy', 'notes', 'createdBy', 'createdAt', 'updatedAt'])
+        && isValidId(data.transactionId)
+        && data.receiptNumber is string && data.receiptNumber.size() >= 4 && data.receiptNumber.size() <= 64
+        && isValidId(data.memberId)
+        && data.memberCode is string && data.memberCode.size() >= 4 && data.memberCode.size() <= 32
+        && data.memberName is string && data.memberName.size() >= 1 && data.memberName.size() <= 120
+        && (!('memberUserUid' in data) || (data.memberUserUid is string && data.memberUserUid.size() <= 128))
+        && data.monthKey is string && data.monthKey.size() == 7
+        && data.amountPaise is int && data.amountPaise > 0 && data.amountPaise <= 1000000000
+        && data.paymentDate is string && data.paymentDate.size() >= 8 && data.paymentDate.size() <= 20
+        && data.paymentMethod in ['CASH', 'UPI', 'BANK_TRANSFER', 'OTHER']
+        && (!('transactionRef' in data) || (data.transactionRef is string && data.transactionRef.size() <= 128))
+        && isValidId(data.collectedByUid)
+        && data.collectedByName is string && data.collectedByName.size() >= 1 && data.collectedByName.size() <= 120
+        && data.allocationMode in ['AUTO_OLDEST', 'MANUAL', 'ADVANCE']
+        && data.allocations is list && data.allocations.size() <= 24
+        && (data.allocations.size() == 0 || data.allocations[0] is map)
+        && data.advanceAddedPaise is int && data.advanceAddedPaise >= 0
+        && data.previousDuePaise is int && data.previousDuePaise >= 0
+        && data.remainingDuePaise is int && data.remainingDuePaise >= 0
+        && data.status in ['COMPLETED', 'REVERSED']
+        && (!('reversalReason' in data) || (data.reversalReason is string && data.reversalReason.size() <= 300))
+        && (!('reversedBy' in data) || (data.reversedBy is string && data.reversedBy.size() <= 128))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 500))
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMemberLedger(data) {
+      return data.keys().hasAll(['memberId', 'memberCode', 'monthKey', 'duePaise', 'paidPaise', 'status', 'updatedAt'])
+        && data.keys().hasOnly(['memberId', 'memberCode', 'memberUserUid', 'monthKey', 'duePaise', 'paidPaise', 'status', 'updatedAt'])
+        && isValidId(data.memberId)
+        && data.memberCode is string && data.memberCode.size() >= 4 && data.memberCode.size() <= 32
+        && (!('memberUserUid' in data) || (data.memberUserUid is string && data.memberUserUid.size() <= 128))
+        && data.monthKey is string && data.monthKey.size() == 7
+        && data.duePaise is int && data.duePaise >= 0 && data.duePaise <= 100000000
+        && data.paidPaise is int && data.paidPaise >= 0 && data.paidPaise <= 100000000
+        && data.status in ['UNPAID', 'PARTIAL', 'PAID']
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidReceipt(data) {
+      return data.keys().hasAll(['receiptNumber', 'paymentId', 'memberId', 'memberCode', 'memberName', 'monthKey', 'amountPaise', 'paymentDate', 'paymentMethod', 'previousDuePaise', 'remainingDuePaise', 'advanceBalancePaise', 'collectorName', 'status', 'createdBy', 'createdAt'])
+        && data.keys().hasOnly(['receiptNumber', 'paymentId', 'memberId', 'memberCode', 'memberName', 'memberUserUid', 'mobile', 'monthKey', 'amountPaise', 'paymentDate', 'paymentMethod', 'transactionRef', 'previousDuePaise', 'remainingDuePaise', 'advanceBalancePaise', 'collectorName', 'status', 'createdBy', 'createdAt'])
+        && data.receiptNumber is string && data.receiptNumber.size() >= 4 && data.receiptNumber.size() <= 64
+        && isValidId(data.paymentId)
+        && isValidId(data.memberId)
+        && data.memberCode is string && data.memberCode.size() >= 4 && data.memberCode.size() <= 32
+        && data.memberName is string && data.memberName.size() >= 1 && data.memberName.size() <= 120
+        && (!('memberUserUid' in data) || (data.memberUserUid is string && data.memberUserUid.size() <= 128))
+        && (!('mobile' in data) || (data.mobile is string && data.mobile.size() <= 20))
+        && data.monthKey is string && data.monthKey.size() == 7
+        && data.amountPaise is int && data.amountPaise > 0
+        && data.paymentDate is string && data.paymentDate.size() <= 20
+        && data.paymentMethod in ['CASH', 'UPI', 'BANK_TRANSFER', 'OTHER']
+        && (!('transactionRef' in data) || (data.transactionRef is string && data.transactionRef.size() <= 128))
+        && data.previousDuePaise is int && data.previousDuePaise >= 0
+        && data.remainingDuePaise is int && data.remainingDuePaise >= 0
+        && data.advanceBalancePaise is int && data.advanceBalancePaise >= 0
+        && data.collectorName is string && data.collectorName.size() <= 120
+        && data.status in ['ACTIVE', 'VOID']
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidExpense(data) {
+      return data.keys().hasAll(['expenseCode', 'expenseDate', 'category', 'description', 'amountPaise', 'paymentMethod', 'addedByUid', 'addedByName', 'status', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['expenseCode', 'expenseDate', 'category', 'description', 'amountPaise', 'vendorName', 'paymentMethod', 'attachmentName', 'addedByUid', 'addedByName', 'notes', 'status', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.expenseCode is string && data.expenseCode.size() >= 4 && data.expenseCode.size() <= 32
+        && data.expenseDate is string && data.expenseDate.size() <= 20
+        && data.category in ['PUJA_DECORATION', 'LIGHTING', 'SOUND_SYSTEM', 'IDOL', 'FLOWERS', 'PRASAD', 'FOOD_DISTRIBUTION', 'SECURITY', 'ELECTRICITY', 'TRANSPORTATION', 'MISCELLANEOUS']
+        && data.description is string && data.description.size() >= 1 && data.description.size() <= 300
+        && data.amountPaise is int && data.amountPaise > 0 && data.amountPaise <= 1000000000
+        && (!('vendorName' in data) || (data.vendorName is string && data.vendorName.size() <= 120))
+        && data.paymentMethod in ['CASH', 'UPI', 'BANK_TRANSFER', 'OTHER']
+        && (!('attachmentName' in data) || (data.attachmentName is string && data.attachmentName.size() <= 200))
+        && isValidId(data.addedByUid)
+        && data.addedByName is string && data.addedByName.size() >= 1 && data.addedByName.size() <= 120
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 500))
+        && data.status in ['ACTIVE', 'ARCHIVED']
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidWhatsappNotification(data) {
+      return data.keys().hasAll(['notificationId', 'memberId', 'memberName', 'recipientPhone', 'type', 'templateName', 'language', 'status', 'sentByUid', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['notificationId', 'memberId', 'memberName', 'recipientPhone', 'type', 'templateName', 'language', 'messageBody', 'relatedPaymentId', 'metaMessageId', 'status', 'errorMessage', 'sentByUid', 'createdAt', 'updatedAt'])
+        && isValidId(data.notificationId)
+        && isValidId(data.memberId)
+        && data.memberName is string && data.memberName.size() >= 1 && data.memberName.size() <= 120
+        && data.recipientPhone is string && data.recipientPhone.size() >= 8 && data.recipientPhone.size() <= 24
+        && data.type in ['RECEIPT', 'REMINDER', 'ANNOUNCEMENT']
+        && data.templateName is string && data.templateName.size() <= 120
+        && data.language in ['bn', 'en']
+        && (!('messageBody' in data) || (data.messageBody is string && data.messageBody.size() <= 1500))
+        && (!('relatedPaymentId' in data) || (data.relatedPaymentId is string && data.relatedPaymentId.size() <= 128))
+        && (!('metaMessageId' in data) || (data.metaMessageId is string && data.metaMessageId.size() <= 200))
+        && data.status in ['QUEUED', 'SENT', 'DELIVERED', 'READ', 'FAILED']
+        && (!('errorMessage' in data) || (data.errorMessage is string && data.errorMessage.size() <= 500))
+        && isValidId(data.sentByUid)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAnnouncement(data) {
+      return data.keys().hasAll(['titleBn', 'titleEn', 'bodyBn', 'bodyEn', 'category', 'publishDate', 'status', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['titleBn', 'titleEn', 'bodyBn', 'bodyEn', 'category', 'publishDate', 'status', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.titleBn is string && data.titleBn.size() >= 1 && data.titleBn.size() <= 200
+        && data.titleEn is string && data.titleEn.size() >= 1 && data.titleEn.size() <= 200
+        && data.bodyBn is string && data.bodyBn.size() >= 1 && data.bodyBn.size() <= 2000
+        && data.bodyEn is string && data.bodyEn.size() >= 1 && data.bodyEn.size() <= 2000
+        && data.category in ['PUJA_SCHEDULE', 'MEETING_NOTICE', 'CULTURAL_PROGRAM', 'COLLECTION_UPDATE', 'IMPORTANT', 'EMERGENCY']
+        && data.publishDate is string && data.publishDate.size() <= 20
+        && data.status in ['PUBLISHED', 'ARCHIVED']
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['userId', 'userName', 'userRole', 'action', 'entityType', 'recordId', 'createdAt'])
+        && data.keys().hasOnly(['userId', 'userName', 'userRole', 'action', 'entityType', 'recordId', 'previousValue', 'newValue', 'createdAt'])
+        && isValidId(data.userId)
+        && data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 120
+        && data.userRole is string && data.userRole.size() <= 40
+        && data.action is string && data.action.size() >= 1 && data.action.size() <= 80
+        && data.entityType is string && data.entityType.size() >= 1 && data.entityType.size() <= 60
+        && data.recordId is string && data.recordId.size() >= 1 && data.recordId.size() <= 128
+        && (!('previousValue' in data) || (data.previousValue is string && data.previousValue.size() <= 2000))
+        && (!('newValue' in data) || (data.newValue is string && data.newValue.size() <= 2000))
+        && data.createdAt is timestamp;
+    }
+
+    function isValidSettings(data) {
+      return data.keys().hasAll(['committeeName', 'defaultMonthlyChandaPaise', 'financialYear', 'whatsappEnabled', 'defaultLanguage', 'updatedAt'])
+        && data.keys().hasOnly(['committeeName', 'committeeAddress', 'contactNumber', 'email', 'pujaYear', 'defaultMonthlyChandaPaise', 'financialYear', 'dueDay', 'whatsappEnabled', 'whatsappPhoneNumberId', 'whatsappBusinessAccountId', 'whatsappApiVersion', 'whatsappReceiptTemplate', 'whatsappReminderTemplate', 'whatsappAnnouncementTemplate', 'whatsappDefaultLanguage', 'defaultLanguage', 'theme', 'updatedBy', 'updatedAt'])
+        && data.committeeName is string && data.committeeName.size() >= 1 && data.committeeName.size() <= 160
+        && (!('committeeAddress' in data) || (data.committeeAddress is string && data.committeeAddress.size() <= 300))
+        && (!('contactNumber' in data) || (data.contactNumber is string && data.contactNumber.size() <= 24))
+        && (!('email' in data) || (data.email is string && data.email.size() <= 160))
+        && (!('pujaYear' in data) || (data.pujaYear is string && data.pujaYear.size() <= 20))
+        && data.defaultMonthlyChandaPaise is int && data.defaultMonthlyChandaPaise >= 0 && data.defaultMonthlyChandaPaise <= 100000000
+        && data.financialYear is string && data.financialYear.size() <= 20
+        && (!('dueDay' in data) || (data.dueDay is int && data.dueDay >= 1 && data.dueDay <= 28))
+        && data.whatsappEnabled is bool
+        && (!('whatsappPhoneNumberId' in data) || (data.whatsappPhoneNumberId is string && data.whatsappPhoneNumberId.size() <= 120))
+        && (!('whatsappBusinessAccountId' in data) || (data.whatsappBusinessAccountId is string && data.whatsappBusinessAccountId.size() <= 120))
+        && (!('whatsappApiVersion' in data) || (data.whatsappApiVersion is string && data.whatsappApiVersion.size() <= 20))
+        && (!('whatsappReceiptTemplate' in data) || (data.whatsappReceiptTemplate is string && data.whatsappReceiptTemplate.size() <= 120))
+        && (!('whatsappReminderTemplate' in data) || (data.whatsappReminderTemplate is string && data.whatsappReminderTemplate.size() <= 120))
+        && (!('whatsappAnnouncementTemplate' in data) || (data.whatsappAnnouncementTemplate is string && data.whatsappAnnouncementTemplate.size() <= 120))
+        && (!('whatsappDefaultLanguage' in data) || data.whatsappDefaultLanguage in ['bn', 'en'])
+        && data.defaultLanguage in ['bn', 'en']
+        && (!('theme' in data) || data.theme in ['light', 'dark'])
+        && (!('updatedBy' in data) || (data.updatedBy is string && data.updatedBy.size() <= 128))
+        && data.updatedAt is timestamp;
+    }
+
+    // =========================================================
+    // Collection Rules
+    // =========================================================
+
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isSuperAdmin());
+      allow list: if isSuperAdmin();
+      allow create, update: if isValidId(userId) && isSuperAdmin() && isValidAdminRole(incoming()) && incoming().uid == userId;
+      allow delete: if isValidId(userId) && isSuperAdmin() && userId != request.auth.uid;
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isSuperAdmin());
+      allow list: if isSuperAdmin() || (isSignedIn() && existing().uid == request.auth.uid);
+      allow create: if isValidId(userId)
+        && isValidUser(incoming())
+        && incoming().uid == userId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          isSuperAdmin() ||
+          (isOwner(userId) && incoming().role == 'MEMBER' && incoming().status == 'ACTIVE')
+        );
+      allow update: if isValidId(userId)
+        && isValidUser(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isSuperAdmin() ||
+          (isOwner(userId)
+            && incoming().role == existing().role
+            && incoming().status == existing().status
+            && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'updatedAt']))
+        );
+      allow delete: if false;
+    }
+
+    match /members/{memberId} {
+      allow get: if isValidId(memberId) && (isCollectionAdmin() || (isSignedIn() && existing().userUid == request.auth.uid));
+      allow list: if isCollectionAdmin() || (isSignedIn() && existing().userUid == request.auth.uid);
+      allow create: if isValidId(memberId)
+        && isCollectionAdmin()
+        && isValidMember(incoming())
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(memberId)
+        && isCollectionAdmin()
+        && isValidMember(incoming())
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isSuperAdmin() ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'mobile', 'whatsappNumber', 'address', 'area', 'monthlyChandaPaise', 'category', 'status', 'whatsappConsent', 'notes', 'photoUrl', 'assignedCollectorUid', 'assignedCollectorName', 'advanceBalancePaise', 'updatedAt'])
+        );
+      allow delete: if false;
+    }
+
+    match /collectionMonths/{monthId} {
+      allow get: if isValidId(monthId) && isSignedIn();
+      allow list: if isSignedIn() && existing().status in ['OPEN', 'CLOSED'];
+      allow create: if isValidId(monthId)
+        && isCollectionAdmin()
+        && isValidCollectionMonth(incoming())
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(monthId)
+        && isSuperAdmin()
+        && isValidCollectionMonth(incoming())
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /payments/{paymentId} {
+      allow get: if isValidId(paymentId) && (isCollectionAdmin() || (isSignedIn() && (existing().createdBy == request.auth.uid || existing().memberUserUid == request.auth.uid)));
+      allow list: if isCollectionAdmin() || (isSignedIn() && (existing().createdBy == request.auth.uid || existing().memberUserUid == request.auth.uid));
+      allow create: if isValidId(paymentId)
+        && isCollectionAdmin()
+        && isValidPayment(incoming())
+        && incoming().status == 'COMPLETED'
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/members/$(incoming().memberId));
+      allow update: if isValidId(paymentId)
+        && isSuperAdmin()
+        && isValidPayment(incoming())
+        && existing().status == 'COMPLETED'
+        && incoming().status == 'REVERSED'
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reversalReason', 'reversedBy', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /memberLedgers/{ledgerId} {
+      allow get: if isValidId(ledgerId) && (isCollectionAdmin() || (isSignedIn() && existing().memberUserUid == request.auth.uid));
+      allow list: if isCollectionAdmin() || (isSignedIn() && existing().memberUserUid == request.auth.uid);
+      allow create: if isValidId(ledgerId)
+        && isCollectionAdmin()
+        && isValidMemberLedger(incoming())
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/members/$(incoming().memberId));
+      allow update: if isValidId(ledgerId)
+        && isCollectionAdmin()
+        && isValidMemberLedger(incoming())
+        && incoming().memberId == existing().memberId
+        && incoming().monthKey == existing().monthKey
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /receipts/{receiptId} {
+      allow get: if isValidId(receiptId) && (isCollectionAdmin() || (isSignedIn() && existing().memberUserUid == request.auth.uid));
+      allow list: if isCollectionAdmin() || (isSignedIn() && existing().memberUserUid == request.auth.uid);
+      allow create: if isValidId(receiptId)
+        && isCollectionAdmin()
+        && isValidReceipt(incoming())
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update: if isValidId(receiptId)
+        && isSuperAdmin()
+        && isValidReceipt(incoming())
+        && existing().status == 'ACTIVE'
+        && incoming().status == 'VOID'
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status']);
+      allow delete: if false;
+    }
+
+    match /expenses/{expenseId} {
+      allow get: if isValidId(expenseId) && isCollectionAdmin();
+      allow list: if isCollectionAdmin();
+      allow create: if isValidId(expenseId)
+        && isCollectionAdmin()
+        && isValidExpense(incoming())
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(expenseId)
+        && isSuperAdmin()
+        && isValidExpense(incoming())
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /whatsappNotifications/{notificationId} {
+      allow get: if isValidId(notificationId) && isCollectionAdmin();
+      allow list: if isCollectionAdmin();
+      allow create: if isValidId(notificationId)
+        && isCollectionAdmin()
+        && isValidWhatsappNotification(incoming())
+        && incoming().sentByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(notificationId)
+        && isCollectionAdmin()
+        && isValidWhatsappNotification(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'metaMessageId', 'errorMessage', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /announcements/{announcementId} {
+      allow get: if isValidId(announcementId) && isSignedIn();
+      allow list: if isSignedIn() && existing().status == 'PUBLISHED';
+      allow create: if isValidId(announcementId)
+        && isCollectionAdmin()
+        && isValidAnnouncement(incoming())
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(announcementId)
+        && isSuperAdmin()
+        && isValidAnnouncement(incoming())
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /auditLogs/{logId} {
+      allow get: if isValidId(logId) && isSuperAdmin();
+      allow list: if isSuperAdmin();
+      allow create: if isValidId(logId)
+        && isCollectionAdmin()
+        && isValidAuditLog(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /settings/{settingId} {
+      allow get: if isValidId(settingId) && isSignedIn();
+      allow list: if isSuperAdmin();
+      allow create, update: if isValidId(settingId)
+        && isSuperAdmin()
+        && isValidSettings(incoming())
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+  }
+}

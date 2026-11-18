@@ -1,0 +1,315 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Application user profile with role and access permissions.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "email": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 24 },
+        "role": { "type": "string", "enum": ["SUPER_ADMIN", "COLLECTION_ADMIN", "MEMBER"] },
+        "memberId": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["ACTIVE", "INACTIVE"] },
+        "canAddMembers": { "type": "boolean" },
+        "canReversePayments": { "type": "boolean" },
+        "canManageExpenses": { "type": "boolean" },
+        "canSendBulkWhatsApp": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "email", "role", "status", "createdAt", "updatedAt"]
+    },
+    "AdminRole": {
+      "title": "AdminRole",
+      "description": "Trusted admin role assignment document for RBAC verification.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "role": { "type": "string", "enum": ["SUPER_ADMIN", "COLLECTION_ADMIN"] },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role", "active", "createdAt"]
+    },
+    "Member": {
+      "title": "Member",
+      "description": "Puja committee member with individual monthly chanda amount stored in integer paise.",
+      "type": "object",
+      "properties": {
+        "memberCode": { "type": "string", "minLength": 4, "maxLength": 32, "pattern": "^MAA-[0-9]{4,}$" },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "mobile": { "type": "string", "minLength": 10, "maxLength": 20 },
+        "whatsappNumber": { "type": "string", "maxLength": 20 },
+        "address": { "type": "string", "maxLength": 300 },
+        "area": { "type": "string", "maxLength": 100 },
+        "joiningDate": { "type": "string", "maxLength": 20 },
+        "monthlyChandaPaise": { "type": "integer" },
+        "category": { "type": "string", "enum": ["GENERAL", "PATRON", "SENIOR", "YOUTH", "FAMILY"] },
+        "status": { "type": "string", "enum": ["ACTIVE", "INACTIVE", "ARCHIVED"] },
+        "whatsappConsent": { "type": "boolean" },
+        "notes": { "type": "string", "maxLength": 500 },
+        "photoUrl": { "type": "string", "maxLength": 2048 },
+        "assignedCollectorUid": { "type": "string", "maxLength": 128 },
+        "assignedCollectorName": { "type": "string", "maxLength": 120 },
+        "advanceBalancePaise": { "type": "integer" },
+        "userUid": { "type": "string", "maxLength": 128 },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["memberCode", "fullName", "mobile", "monthlyChandaPaise", "category", "status", "whatsappConsent", "advanceBalancePaise", "createdBy", "createdAt", "updatedAt"]
+    },
+    "CollectionMonth": {
+      "title": "CollectionMonth",
+      "description": "Monthly collection cycle definition and default monthly chanda rate.",
+      "type": "object",
+      "properties": {
+        "monthKey": { "type": "string", "minLength": 7, "maxLength": 7, "pattern": "^[0-9]{4}-[0-9]{2}$" },
+        "label": { "type": "string", "minLength": 3, "maxLength": 60 },
+        "financialYear": { "type": "string", "minLength": 4, "maxLength": 20 },
+        "defaultAmountPaise": { "type": "integer" },
+        "dueDate": { "type": "string", "maxLength": 20 },
+        "status": { "type": "string", "enum": ["OPEN", "CLOSED"] },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["monthKey", "label", "financialYear", "defaultAmountPaise", "status", "createdBy", "createdAt", "updatedAt"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Immutable chanda payment transaction stored in integer paise with allocation details.",
+      "type": "object",
+      "properties": {
+        "transactionId": { "type": "string", "minLength": 4, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "receiptNumber": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "memberId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberCode": { "type": "string", "minLength": 4, "maxLength": 32 },
+        "memberName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "monthKey": { "type": "string", "minLength": 7, "maxLength": 7 },
+        "amountPaise": { "type": "integer" },
+        "paymentDate": { "type": "string", "minLength": 8, "maxLength": 20 },
+        "paymentMethod": { "type": "string", "enum": ["CASH", "UPI", "BANK_TRANSFER", "OTHER"] },
+        "transactionRef": { "type": "string", "maxLength": 128 },
+        "collectedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "collectedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "allocationMode": { "type": "string", "enum": ["AUTO_OLDEST", "MANUAL", "ADVANCE"] },
+        "allocations": { "type": "array" },
+        "advanceAddedPaise": { "type": "integer" },
+        "previousDuePaise": { "type": "integer" },
+        "remainingDuePaise": { "type": "integer" },
+        "status": { "type": "string", "enum": ["COMPLETED", "REVERSED"] },
+        "reversalReason": { "type": "string", "maxLength": 300 },
+        "reversedBy": { "type": "string", "maxLength": 128 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["transactionId", "receiptNumber", "memberId", "memberCode", "memberName", "monthKey", "amountPaise", "paymentDate", "paymentMethod", "collectedByUid", "collectedByName", "allocationMode", "allocations", "advanceAddedPaise", "previousDuePaise", "remainingDuePaise", "status", "createdBy", "createdAt", "updatedAt"]
+    },
+    "MemberLedger": {
+      "title": "MemberLedger",
+      "description": "Monthly due and paid state per member for a collection month.",
+      "type": "object",
+      "properties": {
+        "memberId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberCode": { "type": "string", "minLength": 4, "maxLength": 32 },
+        "monthKey": { "type": "string", "minLength": 7, "maxLength": 7 },
+        "duePaise": { "type": "integer" },
+        "paidPaise": { "type": "integer" },
+        "status": { "type": "string", "enum": ["UNPAID", "PARTIAL", "PAID"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["memberId", "memberCode", "monthKey", "duePaise", "paidPaise", "status", "updatedAt"]
+    },
+    "Receipt": {
+      "title": "Receipt",
+      "description": "Digital payment receipt linked to a payment transaction.",
+      "type": "object",
+      "properties": {
+        "receiptNumber": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "paymentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberCode": { "type": "string", "minLength": 4, "maxLength": 32 },
+        "memberName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "mobile": { "type": "string", "maxLength": 20 },
+        "monthKey": { "type": "string", "minLength": 7, "maxLength": 7 },
+        "amountPaise": { "type": "integer" },
+        "paymentDate": { "type": "string", "maxLength": 20 },
+        "paymentMethod": { "type": "string", "enum": ["CASH", "UPI", "BANK_TRANSFER", "OTHER"] },
+        "transactionRef": { "type": "string", "maxLength": 128 },
+        "previousDuePaise": { "type": "integer" },
+        "remainingDuePaise": { "type": "integer" },
+        "advanceBalancePaise": { "type": "integer" },
+        "collectorName": { "type": "string", "maxLength": 120 },
+        "status": { "type": "string", "enum": ["ACTIVE", "VOID"] },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["receiptNumber", "paymentId", "memberId", "memberCode", "memberName", "monthKey", "amountPaise", "paymentDate", "paymentMethod", "previousDuePaise", "remainingDuePaise", "advanceBalancePaise", "collectorName", "status", "createdBy", "createdAt"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Puja committee expenditure ledger entry stored in integer paise.",
+      "type": "object",
+      "properties": {
+        "expenseCode": { "type": "string", "minLength": 4, "maxLength": 32 },
+        "expenseDate": { "type": "string", "maxLength": 20 },
+        "category": { "type": "string", "enum": ["PUJA_DECORATION", "LIGHTING", "SOUND_SYSTEM", "IDOL", "FLOWERS", "PRASAD", "FOOD_DISTRIBUTION", "SECURITY", "ELECTRICITY", "TRANSPORTATION", "MISCELLANEOUS"] },
+        "description": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "amountPaise": { "type": "integer" },
+        "vendorName": { "type": "string", "maxLength": 120 },
+        "paymentMethod": { "type": "string", "enum": ["CASH", "UPI", "BANK_TRANSFER", "OTHER"] },
+        "attachmentName": { "type": "string", "maxLength": 200 },
+        "addedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "addedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "status": { "type": "string", "enum": ["ACTIVE", "ARCHIVED"] },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["expenseCode", "expenseDate", "category", "description", "amountPaise", "paymentMethod", "addedByUid", "addedByName", "status", "createdBy", "createdAt", "updatedAt"]
+    },
+    "WhatsappNotification": {
+      "title": "WhatsappNotification",
+      "description": "WhatsApp Business Cloud API delivery log and status tracking.",
+      "type": "object",
+      "properties": {
+        "notificationId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "memberId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "recipientPhone": { "type": "string", "minLength": 8, "maxLength": 24 },
+        "type": { "type": "string", "enum": ["RECEIPT", "REMINDER", "ANNOUNCEMENT"] },
+        "templateName": { "type": "string", "maxLength": 120 },
+        "language": { "type": "string", "enum": ["bn", "en"] },
+        "messageBody": { "type": "string", "maxLength": 1500 },
+        "relatedPaymentId": { "type": "string", "maxLength": 128 },
+        "metaMessageId": { "type": "string", "maxLength": 200 },
+        "status": { "type": "string", "enum": ["QUEUED", "SENT", "DELIVERED", "READ", "FAILED"] },
+        "errorMessage": { "type": "string", "maxLength": 500 },
+        "sentByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["notificationId", "memberId", "memberName", "recipientPhone", "type", "templateName", "language", "status", "sentByUid", "createdAt", "updatedAt"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Puja committee bilingual announcement or notice.",
+      "type": "object",
+      "properties": {
+        "titleBn": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "titleEn": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "bodyBn": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "bodyEn": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "category": { "type": "string", "enum": ["PUJA_SCHEDULE", "MEETING_NOTICE", "CULTURAL_PROGRAM", "COLLECTION_UPDATE", "IMPORTANT", "EMERGENCY"] },
+        "publishDate": { "type": "string", "maxLength": 20 },
+        "status": { "type": "string", "enum": ["PUBLISHED", "ARCHIVED"] },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["titleBn", "titleEn", "bodyBn", "bodyEn", "category", "publishDate", "status", "createdBy", "createdAt", "updatedAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable append-only audit trail for financial and administrative actions.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "userRole": { "type": "string", "maxLength": 40 },
+        "action": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "entityType": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "recordId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "previousValue": { "type": "string", "maxLength": 2000 },
+        "newValue": { "type": "string", "maxLength": 2000 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "userName", "userRole", "action", "entityType", "recordId", "createdAt"]
+    },
+    "Settings": {
+      "title": "Settings",
+      "description": "Committee, collection, non-secret WhatsApp config, and application settings.",
+      "type": "object",
+      "properties": {
+        "committeeName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "committeeAddress": { "type": "string", "maxLength": 300 },
+        "contactNumber": { "type": "string", "maxLength": 24 },
+        "email": { "type": "string", "maxLength": 160 },
+        "pujaYear": { "type": "string", "maxLength": 20 },
+        "defaultMonthlyChandaPaise": { "type": "integer" },
+        "financialYear": { "type": "string", "maxLength": 20 },
+        "dueDay": { "type": "integer" },
+        "whatsappEnabled": { "type": "boolean" },
+        "whatsappPhoneNumberId": { "type": "string", "maxLength": 120 },
+        "whatsappBusinessAccountId": { "type": "string", "maxLength": 120 },
+        "whatsappApiVersion": { "type": "string", "maxLength": 20 },
+        "whatsappReceiptTemplate": { "type": "string", "maxLength": 120 },
+        "whatsappReminderTemplate": { "type": "string", "maxLength": 120 },
+        "whatsappAnnouncementTemplate": { "type": "string", "maxLength": 120 },
+        "whatsappDefaultLanguage": { "type": "string", "enum": ["bn", "en"] },
+        "defaultLanguage": { "type": "string", "enum": ["bn", "en"] },
+        "theme": { "type": "string", "enum": ["light", "dark"] },
+        "updatedBy": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["committeeName", "defaultMonthlyChandaPaise", "financialYear", "whatsappEnabled", "defaultLanguage", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Registered application users and role assignments."
+    },
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminRole" },
+      "description": "Trusted admin registry for Firestore rules role checks."
+    },
+    "/members/{memberId}": {
+      "schema": { "$ref": "#/entities/Member" },
+      "description": "Puja committee member directory and balances."
+    },
+    "/collectionMonths/{monthId}": {
+      "schema": { "$ref": "#/entities/CollectionMonth" },
+      "description": "Monthly collection schedules and rates."
+    },
+    "/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/Payment" },
+      "description": "Chanda payment transactions."
+    },
+    "/memberLedgers/{ledgerId}": {
+      "schema": { "$ref": "#/entities/MemberLedger" },
+      "description": "Per-member per-month due and payment ledger."
+    },
+    "/receipts/{receiptId}": {
+      "schema": { "$ref": "#/entities/Receipt" },
+      "description": "Digital payment receipts."
+    },
+    "/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/Expense" },
+      "description": "Puja committee expenses."
+    },
+    "/whatsappNotifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/WhatsappNotification" },
+      "description": "WhatsApp Business Cloud API delivery logs."
+    },
+    "/announcements/{announcementId}": {
+      "schema": { "$ref": "#/entities/Announcement" },
+      "description": "Committee announcements in Bengali and English."
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Append-only security and financial audit trail."
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/Settings" },
+      "description": "Committee, collection, and non-secret WhatsApp preferences."
+    }
+  }
+}
